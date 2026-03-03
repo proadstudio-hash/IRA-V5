@@ -1,0 +1,188 @@
+CRITICAL CONSTRAINTS
+
+Do NOT change any existing algorithm outputs unless explicitly listed below as “Wrong/Inconsistent”.
+
+Apply minimal, surgical fixes only.
+
+If you need additional values, compute them in new helper functions without touching existing working modules.
+
+Keep the existing UI and report layout; only add small text blocks/labels where requested.
+
+TASK: Fix ONLY what is wrong/inconsistent (App + Report)
+A) FIX MODE/CONFIG MISMATCH IN REPORT (Report + App data binding)
+Problem
+
+The report shows “Single IR configuration” (1 IR file name + 1 mic coordinate) but later pages show “4 IRs overlaid” and “Fusion: 4 IRs” graphs.
+
+Required Fix (BOTH App and Report)
+
+Detect the analysis mode at runtime:
+
+mode = SINGLE_IR | DUAL_IR | FUSION_4IR
+based on the number of IR inputs actually loaded/used.
+
+On the report Configuration page (page 2):
+
+If mode=SINGLE_IR: show exactly 1 IR file name + speaker coordinate + mic coordinate.
+
+If mode=DUAL_IR: show 2 IR file names + 2 speaker coords + 1 mic coord.
+
+If mode=FUSION_4IR: show all 4 IR file names with explicit mapping:
+
+(S1→M1), (S2→M1), (S1→M2), (S2→M2)
+and show:
+
+Speaker coords: S1, S2
+
+Mic coords: M1, M2
+
+Ensure the report section titles also reflect the mode:
+
+“Energy Time Curve – 4 IRs Overlaid” must only appear in FUSION_4IR mode.
+
+Otherwise use “Energy Time Curve”.
+
+Implementation note: This is a pure report binding change—do not alter computations.
+
+B) SCORECARD INCONSISTENCIES (App + Report)
+Problem
+
+Scorecard values do not match the Peak Table:
+
+Scorecard worst case shows “7.9 ms at 0.0 dB” which contradicts peak table.
+
+Scorecard peak bin counts sum far beyond “peaks detected”.
+
+Required Fix (BOTH App and Report)
+
+Rule 1: Scorecard must use the SAME peak objects as the Peak Table.
+
+Do not recompute another peak list.
+
+Use the exact same peaks[] list that populates the “Peak Analysis” table.
+
+Rule 2: Use consistent “Level(dB)” definition
+
+Level(dB) in Scorecard must use the same rel_dB definition as the peak table.
+
+If peak table uses ETC energy dB (10log10), Scorecard must use the same.
+
+Rule 3: Fix bin counts
+
+Replace current bin logic with counting peaks (not samples, not time):
+
+count_0_10 = number of peaks with delay_ms in [0,10)
+
+count_10_20 = peaks in [10,20)
+
+count_20_50 = peaks in [20,50]
+
+Total in bins must be ≤ total detected peaks (and typically equals peaks within 0–50 ms).
+
+Rule 4: Worst offenders
+
+Worst 3 must come from sorting the same peaks[] by the same severity used elsewhere.
+
+Each offender line must show delay_ms, rel_dB, assigned surface (or Unassigned), confidence if available.
+
+Add a small debug line in report (optional, 1 line)
+
+“Scorecard computed from N detected peaks (same as Peak Table).”
+
+C) DECAY METRICS CONFLICTS (Report only + App binding)
+Problem
+
+Text summary values and “Fusion: 4 IRs” cards disagree.
+
+Required Fix (BOTH App and Report, but NO algorithm change)
+
+Define a single source of truth for decay metrics output:
+
+In SINGLE_IR: show only single IR metrics.
+
+In FUSION_4IR: show:
+
+either (A) fused metrics only, OR (B) per-IR metrics + fused average,
+but must be consistent between text and cards.
+
+Implement this rule:
+
+If you show “Fusion metrics cards”, the text summary must pull values from the same fused metrics object used by cards.
+
+If you show per-IR cards, label them clearly and add “Fused Average” line.
+
+Do not alter the Schroeder or regression code—only fix what is printed.
+
+D) UNASSIGNED PEAKS DIAGNOSTICS TABLE (Report only, minimal formatting)
+Problem
+
+“Bounds Failure Reason” contains confusing values like “OK OK”.
+
+Required Fix (REPORT only)
+
+Change the Unassigned Peaks Analysis table columns to explicit fields:
+
+Candidate Surface
+
+Pred Delay (ms)
+
+Time Error (ms)
+
+BoundsPass (Y/N)
+
+uInSegment (Y/N)
+
+FailReason (string; empty if pass)
+Show top 3 candidate surfaces per unassigned peak.
+
+This is a formatting/report clarity fix only.
+
+E) HEATMAP COUNTS “pts” vs “reflections” mismatch (Report + App labeling)
+Problem
+
+Heatmaps show “Front Wall (16 pts)” but later summary says “Front Wall: 3 reflections”.
+
+Required Fix (BOTH App and Report)
+
+Define and use consistent terms:
+
+“Assigned Reflections” = number of peak-to-surface assignments (peaks) for that surface.
+
+“Support Points” = number of contributing points used to build heatmap (e.g., across 4 IRs).
+
+Update heatmap title labels:
+
+Use: “Front Wall (Assigned reflections: X, Support points: Y)”
+If SINGLE_IR mode, X and Y may be same; if FUSION_4IR, Y may be larger.
+
+Update the later textual summary to match the same definitions and values.
+
+No change to heatmap computation—only labels and count reporting.
+
+F) MISSING EXPLANATIONS (Report only, add short text blocks)
+
+Add brief, client-readable explanations in the report (do not change charts/algorithms):
+
+Under Peak Analysis table:
+
+Add 2–3 lines:
+
+“Level(dB) is ETC energy level at the peak time, normalized so direct arrival ≈ 0 dB.”
+
+“Delays are measured relative to the direct arrival.”
+
+Under Geometry Settings:
+
+Add 2 lines explaining:
+
+“Strict bounds ON: only reflections whose predicted specular point lies within the finite wall rectangle are considered assigned.”
+
+“2nd order ON: includes two-bounce paths; may still miss reflections caused by furniture/objects.”
+
+On plots (if easy):
+
+Add small axis direction note in captions:
+
+“Coordinates: x front→rear, y right→left, z floor→ceiling.”
+
+These are report-text additions only.

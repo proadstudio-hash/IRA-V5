@@ -1,0 +1,124 @@
+Inputs
+	1.	REW IR text file:
+
+	•	Typically 2 columns: time (seconds) and amplitude
+	•	Robust parsing: ignore header lines; accept whitespace/comma/semicolon separators.
+	•	If time column missing: require sample rate Fs and build time array.
+
+	2.	Room geometry (rectangular):
+
+	•	Room dimensions in meters: L (depth x), W (width y), H (height z)
+	•	Coordinate system:
+	•	Origin (0,0,0) = front-right-bottom corner
+	•	x: front→rear, y: right→left, z: floor→ceiling
+
+	3.	Positions
+
+	•	Speaker S=(x_s,y_s,z_s) in meters
+	•	Mic M=(x_m,y_m,z_m) in meters
+
+	4.	Parameters
+
+	•	Speed of sound c (default 343 m/s) OR compute from temperature: c = 331.3 + 0.606*T(°C)
+	•	Early window: start_ms (default 0.3), end_ms (default 50)
+	•	ETC smoothing window W_ms (default 0.8)
+	•	Peak min separation minSep_ms (default 1.0)
+	•	Peak thresholds:
+	•	relative-to-direct: keep peaks ≥ (0 dB - X) where X default 25 dB
+	•	noise-floor: keep peaks ≥ (noiseFloor + Y) where Y default 6 dB
+	•	Matching tolerance τ_ms (default 0.35 ms)
+
+Outputs
+
+Table A: Peak list (ranked)
+
+For each detected “critical” early reflection peak:
+	•	rank
+	•	measured delay Δt_meas_ms (relative to direct)
+	•	rel level dB vs direct (ETC-based)
+	•	extra path length ΔL = c * Δt_meas (meters)
+	•	target reflected length L_refl_target = L_dir + ΔL
+	•	severity score
+
+Table B: Geometry assignment (specular 1st order)
+
+For each peak, evaluate 6 candidate surfaces (front/rear/left/right/floor/ceiling) and compute specular reflection point P^\* using image-source math.
+Report best match(es) with:
+	•	assigned surface label
+	•	predicted delay Δt_pred_ms
+	•	time error |Δt_pred - Δt_meas| (ms)
+	•	confidence = clamp(1 - error/τ_ms, 0..1)
+	•	reflection point P* = (x,y,z)
+	•	distances:
+	•	|S-P*|, |P*-M|, |M-P*|
+	•	geometry validity flags:
+	•	insideSurfaceBounds (boolean)
+	•	uInSegment (boolean; u* in [0,1])
+
+If no surface matches within tolerance, mark as “Unassigned (likely higher-order or object/furniture)”.
+
+DSP / Peak detection algorithm (must implement)
+	1.	Load IR samples; determine dt from time column (median diff).
+	2.	Find direct arrival index i0 as the maximum of abs(IR) within first 200 ms.
+	3.	Compute ETC:
+	•	E[i] = IR[i]^2
+	•	Smooth with moving average window W = round((W_ms/1000)/dt) using prefix-sum for performance
+	•	ETC_dB[i] = 10*log10(E_smooth[i]/max(E_smooth)) so direct ≈ 0 dB
+	4.	Noise floor = median(ETC_dB in last 20% of samples) (or last 200 ms, whichever smaller).
+	5.	Detect local maxima in [t0+start_ms, t0+end_ms], enforce minSep_ms.
+	6.	Filter peaks by thresholds (relative-to-direct and/or noise-floor).
+	7.	Severity score (rank): severity = rel_dB - K*log10(1 + delay_ms), K default 6.
+
+Specular geometry algorithm (must be mathematically exact)
+
+Let L_dir = ||S - M||.
+
+For each surface plane Π defined by (P0, n) where n is unit normal:
+
+Image source
+S’ = S - 2*( dot(n, S - P0) )*n
+
+Reflection point
+Let denom = dot(n, M - S’)
+If denom == 0: no intersection → invalid
+u* = dot(n, P0 - S’) / denom
+P* = S’ + u*(M - S’)
+
+Predicted reflected length and delay
+L_refl_pred = ||S’ - M||
+Δt_pred = (L_refl_pred - L_dir)/c
+
+Bounds checks for rectangular room
+	•	For each wall, check P* within its rectangle:
+	•	front/rear: 0<=y<=W and 0<=z<=H
+	•	left/right: 0<=x<=L and 0<=z<=H
+	•	floor/ceiling: 0<=x<=L and 0<=y<=W
+
+Match
+A surface matches a measured peak if:
+	•	insideSurfaceBounds is true (strict mode ON by default)
+	•	|Δt_pred_ms - Δt_meas_ms| <= τ_ms
+
+Pick the best match per peak by minimal time error. Also provide a toggle “show top 3 candidate surfaces per peak”.
+
+Visualizations
+	•	Plot ETC_dB vs time (ms relative to direct) up to end_ms. Mark:
+	•	detected peaks
+	•	assigned peaks (with surface labels on hover)
+	•	2D top view (x-y) of room:
+	•	show S, M
+	•	show P* for selected peak
+	•	draw ray segments S→P* and P*→M
+	•	Optional 3D view (Three.js) for room box and rays.
+
+Acceptance criteria
+	•	Given valid room dims and positions, each surface produces at most one P*.
+	•	For a known synthetic test (generate IR with one specular reflection), the app assigns the correct wall and P* within tolerance.
+	•	For real REW IR, the app extracts peaks and lists plausible surfaces with confidence.
+
+Deliver complete working code and a README explaining:
+	•	why ΔL = cΔt and why mic→surface is not unique without geometry
+	•	how image-source enforces equal-angle automatically
+	•	what “unassigned” means (furniture/higher order).
+
+PROMPT END

@@ -1,0 +1,427 @@
+You are working on an existing React + TypeScript web app (already functional) that:
+
+imports a REW Impulse Response text file,
+
+builds ETC,
+
+detects early reflection peaks,
+
+assigns 1st-order specular reflections to room surfaces using image-source geometry,
+
+generates a PDF-like “reflection report” with tables + plots (similar to “reflection-report (6)”).
+
+IMPORTANT CONSTRAINTS
+
+Do NOT modify existing working behavior.
+
+Add new features by creating new modules/components and only minimal wiring: “feature toggles” + new report sections.
+
+No breaking changes to current parsing, peak detection, geometry assignment, current report pages, or existing UI flows.
+
+If a needed value is not available from current code, compute it in the new modules without touching the existing ones.
+
+NEW FEATURES TO ADD
+Feature 1 — “Quality Gates” Scorecard (client-friendly, at top of report)
+
+Add a new “Scorecard” section shown at the very top of the report, before the plots.
+
+Inputs (use existing data):
+
+direct arrival time index/time t0 (already used in ETC)
+
+list of detected peaks with: delay_ms, rel_dB (vs direct), severity, assignedSurface (or Unassigned)
+
+Metrics to compute:
+
+ITDG (Initial Time Delay Gap)
+Definition: the time between direct (0 ms) and the first “significant reflection”.
+Significant reflection rule (default): first peak with rel_dB >= -20 dB.
+Output: ITDG in ms and PASS/FAIL:
+
+PASS if ITDG ≥ 10 ms (mix target)
+
+WARN if 6–10 ms
+
+FAIL if < 6 ms
+(Allow user presets: “Vocal”, “Mix”, “Podcast” that adjust thresholds.)
+
+Early Reflection Level Compliance
+Compute:
+
+RFZ check: “All reflections in 0–20 ms below -20 dB?”
+
+Critical early check: “Any reflection in 0–10 ms above -15 dB?”
+Return PASS/WARN/FAIL, plus the worst offending peak.
+
+Peak counts in time bins
+Count critical peaks (after your existing filtering rules):
+
+peaks in 0–10 ms
+peaks in 10–20 ms
+peaks in 20–50 ms
+
+Worst offenders
+List top 3 peaks by severity with:
+
+delay_ms
+
+rel_dB
+
+assignedSurface (or Unassigned)
+
+confidence if available
+
+Report output:
+
+Add a compact card with:
+
+ITDG value + verdict
+
+RFZ verdict and “0–10 ms” verdict
+
+binned counts
+
+worst offenders list
+
+Feature 2 — Schroeder decay + EDT / T20 / T30 / RT60 estimates
+
+Add a new “Decay Metrics” report section (after scorecard, before ETC plot is ok).
+
+Requirements:
+
+Compute the Schroeder integrated decay curve from the impulse response:
+
+energy: e[n] = ir[n]^2
+
+reverse cumulative sum: E[n] = sum_{k=n..end} e[k]
+
+normalize: E_norm[n] = E[n]/max(E)
+
+decay dB: D[n] = 10*log10(E_norm[n])
+
+Determine decay time metrics using linear regression on D(t):
+
+EDT: fit from 0 to -10 dB, extrapolate to -60
+
+T20: fit from -5 to -25 dB, extrapolate to -60
+
+T30: fit from -5 to -35 dB, extrapolate to -60
+
+RT60 estimate: use T20/T30 extrapolation (standard)
+
+Add optional “early vs late split”:
+
+early slope: 0 to -10 dB
+
+late slope: -15 to -35 dB (if available)
+
+report both + interpret as “fluttery early but stable late” etc.
+
+Plots:
+
+Plot D(t) (decay dB vs time ms)
+
+Mark the regression ranges for EDT/T20/T30
+
+Notes:
+
+Even if absolute calibration is unknown, these metrics must be presented as valid relative decay characteristics.
+
+Feature 3 — Clarity/Definition metrics: C50, C80, D50, Ts
+
+Add a new report section “Clarity & Definition”.
+
+Definitions (based on IR energy):
+
+Let t=0 at direct arrival t0 (your alignment reference).
+
+Let E_total = ∫ e(t) dt over a meaningful window (e.g., 0 to 500 ms or full length).
+
+Let E_early50 = ∫_{0..50ms} e(t) dt, E_late50 = E_total - E_early50
+
+Let E_early80 = ∫_{0..80ms} e(t) dt, E_late80 = E_total - E_early80
+
+Compute:
+
+C50 (dB) = 10 log10(E_early50 / E_late50)
+
+D50 (%) = 100 * (E_early50 / E_total)
+
+C80 (dB) = 10 log10(E_early80 / E_late80)
+
+Ts (ms) = 1000 * (∫ t e(t) dt / ∫ e(t) dt) over the same window
+
+Output values + short interpretation:
+
+speech/vocal: C50, D50 helpful
+
+music: C80
+
+Ts indicates perceived “distance/blur”
+
+Feature 4 — Frequency-domain view + comb-filter linkage to peaks
+
+Add a “Frequency Response & Comb Impact” report section.
+
+Requirements:
+
+Compute frequency response magnitude from IR:
+
+Use FFT of a suitable windowed IR segment (e.g., 0..300 ms after direct)
+
+Apply Hann window
+
+Plot magnitude in dB (relative scale ok)
+
+Provide smoothing option: 1/12 or 1/24 octave smoothing (implement smoothing on log-frequency bins)
+
+For top N peaks (default N=5 by severity):
+
+show their delays Δt (ms)
+
+compute comb spacing:
+
+Δf ≈ 1 / Δt_seconds
+
+optionally list first few notch frequencies:
+
+f_n ≈ (2n+1)/(2Δt) for n=0..4
+Show these in a small table “Peak → comb signature”.
+Optional overlay:
+
+vertical markers at notch frequencies on the FFT plot (toggle on/off)
+
+Feature 5 — Smarter “Unassigned peaks” diagnostics + classification
+
+Currently many peaks show “Unassigned”. Add diagnostics per unassigned peak.
+
+For each unassigned peak:
+
+Compute the closest candidate surfaces even if they failed strict validity:
+
+for each surface:
+
+predicted delay Δt_pred
+
+time error
+
+bounds check pass/fail reason (e.g., y out of range, z out of range)
+
+u* in [0..1] pass/fail
+Return “Top 3 closest surfaces” with reason codes.
+
+Classification heuristics (rule-based, explainable):
+
+Desk/console bounce: strong peak, typically 1–6 ms, often floor-ish geometry but not matching wall bounds; mark “likely desk/console/near object”
+
+Stand/screen/rack: early-mid 4–12 ms and asymmetric between speakers; mark “likely local object near one speaker”
+
+Diffraction/edge effects: multiple peaks clustered within <1 ms separation or inconsistent with specular predictions; mark “likely diffraction”
+
+Higher-order: if peak aligns with 2nd-order predictions (if available) but not 1st-order; mark “likely higher-order reflection”
+
+Noise: near threshold, low confidence; mark “likely noise”
+
+Add this as an expanded row panel in the peak table and as a report subsection: “Unassigned peaks analysis”.
+
+Feature 6 — Surface “Criticality Heatmap” (probability density map)
+
+You already show discrete reflection points and uncertainty circles. Add a new per-surface 2D heatmap.
+
+Requirements:
+
+For each surface, create a 2D grid in the surface UV coordinates (e.g., y–z for front wall, x–z for left wall, x–y for floor).
+Each assigned peak contributes a Gaussian blob centered at its reflection point P* projected on that surface:
+
+Heat contribution:
+
+H += w_peak * exp( - ( (du^2)/(2σu^2) + (dv^2)/(2σv^2) ) )
+
+Where:
+
+weight w_peak is based on severity and loudness:
+
+suggested: w = exp(α*(rel_dB/20)) * exp(-β*delay_ms)
+
+keep it stable; normalize final heatmap to 0..1
+
+σ derived from:
+
+matching tolerance τ_ms converted to path length: σL = c*τ
+
+local sensitivity: approximate with finite difference by perturbing P* slightly (or simpler: constant σ based on τ)
+Deliver at least a robust “constant σ” implementation first.
+
+Outputs:
+
+Heatmap image per surface + colorbar (0..1)
+
+Overlay the reflection points on top
+
+Provide “Top hotspots” list: top 3 maxima coordinates on the surface (UV + XYZ)
+
+Add this as a new report section: “Treatment Target Heatmaps”.
+
+MULTI-IR FUSION MODES (ADD WITHOUT BREAKING SINGLE-IR MODE)
+Feature 7 — Dual-speaker fusion (2 IR, 1 mic)
+
+Add a new optional mode: “Dual Speaker Fusion”.
+Inputs:
+
+IR from Speaker A (Left) and IR from Speaker B (Right)
+
+Coordinates: S_L, S_R
+
+Same mic M
+
+Process:
+
+Detect peaks independently for each IR using the existing pipeline.
+
+Assign surfaces independently for each IR (existing geometry assignment).
+
+Fuse evidence to produce more reliable surface criticality and reject local-object artifacts.
+
+Fusion logic (must be deterministic, explainable):
+
+For each surface candidate and each measured peak pair:
+
+If peaks from L and R occur at similar predicted surface delays, increase confidence.
+
+Create fused cost:
+J = wL*|Δt_meas_L - Δt_pred_L(surface)| + wR*|Δt_meas_R - Δt_pred_R(surface)| + penalties
+
+Use wL=wR=1 by default, and penalties for bounds failure.
+
+If a peak exists only in L or only in R above threshold, label as “asymmetric/local object candidate”.
+
+Outputs:
+
+Combined surface ranking (“stereo-confirmed reflections”)
+
+Combined heatmaps (sum heatmaps from L and R, with extra weight for stereo-confirmed points)
+
+UI:
+
+Toggle “Single IR” vs “Dual Speaker Fusion”
+
+In report, add a “Stereo Consistency” section:
+
+% peaks confirmed by both speakers
+
+surfaces with high asymmetry warnings
+
+Feature 8 — 4-IR true 3D refinement (2 speakers × 2 mic positions)
+
+Add a new optional “4-IR 3D Refinement Mode”:
+
+Speaker positions: S1, S2
+
+Mic positions: M1, M2
+
+IR files: (S1→M1), (S2→M1), (S1→M2), (S2→M2)
+
+Goal:
+
+More precise and robust assignment of reflection points and detection of room asymmetries.
+
+Keep 1st-order specular constraint on surfaces; use multiple observations to refine confidence and reject false matches.
+
+Measurement linking:
+
+For each surface, there is a specular reflection point predicted per (S, M) pair:
+P*(surface, S, M) computed by image-source intersection.
+
+For each measured peak in each IR, compute the best surface match with time error.
+
+Then define a “multi-view consistency” score:
+
+A surface is strongly supported if it matches consistently across multiple IRs:
+
+small time errors in many of the 4 measurements
+
+predicted points P* cluster tightly on the same region of that surface
+
+Robust fusion:
+
+For each surface:
+
+Collect all matched peaks from all 4 IRs within tolerance.
+
+Cluster their P* points (DBSCAN or simple radius clustering).
+
+Each cluster becomes a “3D-supported hotspot” on that surface.
+
+Assign confidence based on:
+
+count of supporting IRs (1..4)
+
+average time error
+
+average rel_dB
+
+Outputs:
+
+Per-surface hotspots with support count (e.g., “supported by 3/4 IRs”)
+
+A combined heatmap weighted by support count (4 IR support = highest)
+
+Diagnostics: which IRs disagree (useful for setup errors or asymmetry)
+
+UI:
+
+A “Multi-IR” tab:
+
+upload 4 files
+
+enter 2 speakers + 2 mic coordinates
+
+run analysis
+
+Preserve old single-IR and dual-IR behavior untouched.
+
+IMPLEMENTATION REQUIREMENTS
+
+Add new components/modules:
+
+Scorecard.tsx
+
+DecayMetrics.ts + DecayPlot.tsx
+
+ClarityMetrics.ts
+
+FrequencyAnalysis.ts + FFTPlot.tsx
+
+UnassignedDiagnostics.ts
+
+SurfaceHeatmaps.ts
+
+FusionDualIR.ts
+
+Fusion4IR.ts
+
+Do not refactor existing code; call existing functions as “black boxes” when possible.
+
+If necessary, create a thin adapter layer that converts existing outputs into inputs for these new modules.
+
+ACCEPTANCE TESTS
+
+Single IR mode still produces the same outputs as before (no change).
+
+Scorecard appears at top and computes ITDG + compliance + counts.
+
+Decay metrics produce a Schroeder curve and EDT/T20/T30/RT60 values.
+
+C50/C80/D50/Ts computed and displayed.
+
+FFT plot renders and top peaks show Δf + notch list.
+
+Unassigned peaks show top-3 surface candidates with failure reasons.
+
+Heatmaps render per surface and show hotspots.
+
+Dual IR mode produces a combined surface ranking and stereo consistency section.
+
+4-IR mode produces multi-view supported hotspots and combined heatmap.
+
+Deliver updated working app code and short README updates describing these new sections.

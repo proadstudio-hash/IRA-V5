@@ -1,0 +1,27 @@
+| Material                                                        | Avg reflectiveness (R_{avg}) | Avg reflected (%) |
+| --------------------------------------------------------------- | ---------------------------: | ----------------: |
+| Tiles (marble/glazed)                                           |                        0.987 |             98.7% |
+| MLV *(proxy = vinyl/linoleum on concrete)*                      |                        0.973 |             97.3% |
+| Aluminium panel *(flat metal plate proxy)*                      |                        0.950 |             95.0% |
+| Concrete (poured, rough, unpainted)                             |                        0.948 |             94.8% |
+| Half aluminium / half window (50% metal + 50% glass)            |                        0.946 |             94.6% |
+| Parquet on concrete                                             |                        0.943 |             94.3% |
+| High-density MDF 22–30 mm *(proxy = solid wood panel behavior)* |                        0.943 |             94.3% |
+| MDF *(proxy = solid wood panel behavior)*                       |                        0.943 |             94.3% |
+| Diffuser panel *(proxy = solid wood diffuser)*                  |                        0.943 |             94.3% |
+| Solid wood (panel/door)                                         |                        0.943 |             94.3% |
+| Glass (6 mm plate, large pane)                                  |                        0.942 |             94.2% |
+| Half wall / half window (50% drywall + 50% glass)               |                        0.923 |             92.3% |
+| Plasterboard (12 mm in suspended grid)                          |                        0.918 |             91.8% |
+| Drywall / plasterboard (12 mm on studs)                         |                        0.903 |             90.3% |
+| Steel / reinforced metal *(proxy = steel decking)*              |                        0.898 |             89.8% |
+| Plywood (19 mm, airspace, light bracing)                        |                        0.858 |             85.8% |
+| Baltic birch plywood *(proxy = plywood 19 mm)*                  |                        0.858 |             85.8% |
+| Felt (needle-felt 5 mm on concrete)                             |                        0.845 |             84.5% |
+| Carpet (thin)                                                   |                        0.843 |             84.3% |
+| PET panel 12 mm                                                 |                        0.540 |             54.0% |
+| Curtain *(heavy, pleated; 18 oz/yd², 50%)*                      |                        0.488 |             48.8% |
+| PET panel 24 mm                                                 |                        0.450 |             45.0% |
+| Office ceiling panels *(acoustic tile, suspended)*              |                        0.383 |             38.3% |
+| Perforated metal absorber (13% open + 50 mm fiberglass)         |                        0.225 |             22.5% |
+| Absorber panel (50 mm fiberglass board)                         |                        0.183 |             18.3% |

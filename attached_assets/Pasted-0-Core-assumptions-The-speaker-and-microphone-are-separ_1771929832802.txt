@@ -1,0 +1,358 @@
+0) Core assumptions
+
+The speaker and microphone are separated (not co-located).
+
+From IR alone, “mic→surface distance” is not uniquely solvable.
+
+In Geometry Mode, with room + speaker + mic coordinates, the app can compute:
+
+Which wall/floor/ceiling likely caused each peak
+
+The reflection point on that surface
+
+The mic→reflection point distance (a physically meaningful distance)
+
+Optional 2nd order reflections (wall-wall, wall-floor, etc.) with limits
+
+1) New features summary
+
+Add a toggle with two modes:
+
+Mode A — “IR-Only”
+
+Same as baseline: detect early peaks, compute delay, ΔL, and equivalent distance ΔL/2.
+
+Mode B — “Geometry Mode (Image Source Solver)”
+
+User inputs room geometry and positions; app:
+
+Detects early peaks from ETC (same DSP pipeline).
+
+Predicts reflection delays using image-source.
+
+Matches predicted reflections to measured peaks.
+
+Outputs a table: each peak assigned to surface + reflection point + mic distance.
+
+Visualizes rays in 2D/3D.
+
+2) Geometry input UI
+
+Add a Geometry Panel with:
+
+A) Room model
+
+Room type:
+
+Rectangular (default)
+
+Custom planes (advanced) (optional but aim to support)
+
+For rectangular:
+
+Dimensions: L (x), W (y), H (z) in meters
+
+Coordinate system:
+
+Origin at Front-Left-Floor corner
+
+x = front→rear, y = left→right, z = floor→ceiling
+
+Surface labels:
+
+Front wall (x=0)
+
+Rear wall (x=L)
+
+Left wall (y=0)
+
+Right wall (y=W)
+
+Floor (z=0)
+
+Ceiling (z=H)
+
+B) Source(s) and mic
+
+Speaker position S = (x,y,z) meters
+
+Mic position M = (x,y,z) meters
+
+Option: multiple sources:
+
+“Add speaker” → analyze each separately (L/R) and show separate results tabs
+
+C) Physics parameters
+
+Speed of sound c (default 343)
+
+Optional temperature input to compute c = 331.3 + 0.606*T
+
+“Peak match tolerance” in ms (default 0.35 ms)
+
+D) Reflection order
+
+Order 1 enabled by default
+
+Order 2 optional (checkbox)
+
+For order 2, limit combinations to keep runtime low:
+
+max predicted reflections: e.g. 48
+
+only consider surfaces that are “reflective” (see absorption inputs below)
+
+E) Optional surface properties
+
+For each surface, allow:
+
+“Reflectivity weight” 0..1 (default 1.0)
+
+Material preset dropdown (Drywall, Glass, Concrete, Curtain, Carpet, Absorber) that sets a default weight
+
+Use these weights only for ranking/priors (not hard physics).
+
+3) Image Source Method math (must implement)
+3.1 First-order reflections (single plane)
+
+For each plane (surface) with unit normal n and plane equation:
+
+Plane defined by point P0 on plane and normal n (normalized).
+
+Reflect the speaker point S across the plane to get image source S′:
+
+Let:
+
+v = S - P0
+
+dist = dot(v, n)
+
+S' = S - 2 * dist * n
+
+Predicted reflection path length:
+
+L_refl = |S' - M|
+Direct path length:
+
+L_dir = |S - M|
+Predicted delay relative to direct:
+
+Δt_pred = (L_refl - L_dir) / c (seconds)
+
+Reflection point on the surface:
+
+Ray from S′ to M: R(u) = S' + u*(M - S')
+
+Intersect with plane: solve dot(R(u) - P0, n) = 0
+
+u = dot(P0 - S', n) / dot(M - S', n)
+
+If u not in [0,1] → intersection is outside segment; still compute but mark as “geometrically invalid”
+
+P_ref = R(u)
+
+Mic-to-surface distance for this reflection:
+
+d_mic_refPoint = |M - P_ref|
+(also optional speaker-to-refPoint: |S - P_ref|)
+
+Also compute incidence angle (optional):
+
+direction to plane from S: dir_in = normalize(P_ref - S)
+
+incidence cos = abs(dot(dir_in, n))
+
+3.2 Second-order reflections (optional)
+
+Generate second-order image sources by reflecting S across plane A then plane B:
+
+S1 = reflect(S, planeA)
+
+S2 = reflect(S1, planeB)
+
+Then predicted length |S2 - M|
+
+You may compute two reflection points by back-tracing (advanced) OR just provide the two-surface label and predicted delay.
+Keep it efficient:
+
+Only compute second-order for a small set (e.g. top 4 most reflective surfaces by weight).
+
+Or cap total predicted paths.
+
+4) Peak detection pipeline (same as baseline, but reusable)
+
+Keep the DSP approach:
+
+Parse REW file
+
+Find direct arrival t0
+
+ETC: E=IR², moving average smoothing (ms), convert to dB normalized to max
+
+Detect peaks in early window and apply thresholds
+
+Output peaks: delay_ms, rel_dB, severity score
+
+5) Matching algorithm: predicted reflections ↔ measured peaks
+
+Implement a robust assignment:
+
+Inputs
+
+Measured peaks list Pk with (delay_ms, rel_dB, severity)
+
+Predicted reflections list Rj with (surfaceLabel(s), Δt_pred_ms, reflectionPoint, validityFlag, priorWeight)
+
+Cost function
+For each pair (Pk, Rj):
+
+timeErr = abs(Pk.delay_ms - Rj.Δt_pred_ms)
+
+cost = timeErr / tol_ms
+
+Add penalties:
+
+if reflection point invalid → +0.75
+
+if surface weight low → + (1 - weight)*0.5
+
+If timeErr > tol_ms * 2 → disallow (infinite cost)
+
+Assignment method
+
+Prefer Hungarian algorithm for global optimal matching (implement or use a lightweight TS implementation).
+
+If too heavy, use a greedy approach:
+
+sort peaks by severity desc
+
+for each peak choose the lowest-cost unused reflection candidate
+
+mark as assigned
+
+Provide a “confidence score”:
+
+confidence = clamp(1 - timeErr/tol_ms, 0, 1)
+
+downgrade if invalid geometry
+
+Output classification
+
+Assigned peaks: show surface + reflection point + mic distance
+
+Unassigned peaks: show “Unknown / higher-order / object (desk/stand) / not in model”
+
+6) Output tables (Geometry Mode)
+
+Create two tables:
+
+6.1 Peak-centric table (main)
+
+Columns:
+
+Rank
+
+Measured Delay Δt (ms)
+
+Rel Level (dB vs direct)
+
+Assigned Surface (e.g. Left Wall)
+
+Reflection Order (1 or 2)
+
+Predicted Delay (ms)
+
+Time Error (ms)
+
+Mic→ReflectionPoint distance (m)
+
+Reflection point coordinates (x,y,z)
+
+Confidence (0..1)
+
+Severity score
+
+6.2 Surface-centric table (actionable)
+
+Group assigned peaks by surface and compute:
+
+Count of assigned peaks
+
+Worst peak (highest severity)
+
+Earliest strong peak time
+
+Sum severity (surface “criticality”)
+This becomes a ranked list of surfaces compromising early reflection most.
+
+7) Visualizations (must add)
+
+A) ETC plot
+
+Same as baseline, but:
+
+show assigned peaks in one marker style
+
+show unassigned peaks different style
+
+tooltip includes assigned surface, time error, confidence
+
+B) Room view with rays
+Implement:
+
+2D top view (x-y) with room rectangle, speaker, mic, reflection points, ray segments
+
+2D side view (x-z) optional
+
+3D view (Three.js) optional but recommended for “most advanced”
+
+show room wireframe box
+
+points for S, M, P_ref
+
+lines for S→P_ref and P_ref→M
+Allow toggles:
+
+show only top N peaks
+
+show by surface selection dropdown
+
+8) Project management features
+
+Save/load a “project” JSON containing:
+
+room dims, coordinates, settings, thresholds, c/temperature, surface weights
+
+Export results CSV for peaks and surfaces.
+
+9) Performance constraints
+
+Must handle large IR files efficiently:
+
+Avoid O(N²)
+
+Use typed arrays where possible
+
+Smoothing via cumulative sum (prefix sums) instead of naive window loops
+
+Matching uses limited predicted reflections (<= ~100)
+
+10) Deliverables
+
+A working React+TS web app on Replit
+
+Clear README:
+
+Explain why Geometry Mode can assign surfaces
+
+Explain limitations (furniture, non-rectangular rooms, higher orders)
+
+Explain “equivalent distance” vs “mic-to-reflection point distance”
+
+11) Final notes shown in UI (important)
+
+Display a note:
+
+IR-only mode: distance is not unique; only ΔL and equivalent distance
+
+Geometry mode: assignments are probabilistic; unmodeled objects (desk, screen) can create peaks not matching walls.
