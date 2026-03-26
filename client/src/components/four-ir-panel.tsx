@@ -7,7 +7,7 @@ import { Separator } from "@/components/ui/separator";
 import { Box, Upload, Play } from "lucide-react";
 import { parseIRFile } from "@/lib/dsp";
 import { computeFourIRFusion, type FourIRInput, type FourIRResult } from "@/lib/fusion-4ir";
-import type { IRData, RoomDimensions, SpeakerConfig, Point3D, AnalysisSettings, MatchedPeak, FusionIRDataset } from "@shared/schema";
+import type { IRData, RoomDimensions, SpeakerConfig, Point3D, AnalysisSettings, MatchedPeak, FusionIRDataset, CeilingConfig, RoomObject } from "@shared/schema";
 import { useToast } from "@/hooks/use-toast";
 
 interface FourIRPanelProps {
@@ -18,8 +18,11 @@ interface FourIRPanelProps {
   settings: AnalysisSettings;
   surfaceWeights: Record<string, number>;
   surfaceMaterials: Record<string, string>;
+  ceiling?: CeilingConfig;
+  roomObjects?: RoomObject[];
   onFusionResult?: (fusionPeaks: MatchedPeak[]) => void;
   onFusionDatasets?: (datasets: FusionIRDataset[], fusionPeaks: MatchedPeak[]) => void;
+  onFourIRResult?: (result: FourIRResult | null) => void;
 }
 
 interface IRSlot {
@@ -28,7 +31,7 @@ interface IRSlot {
   data: IRData | null;
 }
 
-export function FourIRPanel({ room, speakers, micPosition, mic2Position, settings, surfaceWeights, surfaceMaterials, onFusionResult, onFusionDatasets }: FourIRPanelProps) {
+export function FourIRPanel({ room, speakers, micPosition, mic2Position, settings, surfaceWeights, surfaceMaterials, ceiling, roomObjects, onFusionResult, onFusionDatasets, onFourIRResult }: FourIRPanelProps) {
   const { toast } = useToast();
   const [slots, setSlots] = useState<IRSlot[]>([
     { label: 'S1 → M1', key: 'S1M1', data: null },
@@ -43,6 +46,7 @@ export function FourIRPanel({ room, speakers, micPosition, mic2Position, setting
     setResult(null);
     onFusionResult?.([]);
     onFusionDatasets?.([], []);
+    onFourIRResult?.(null);
   }, [speakers, micPosition, mic2Position, room]);
 
   const handleUpload = useCallback((slotKey: string) => {
@@ -90,10 +94,11 @@ export function FourIRPanel({ room, speakers, micPosition, mic2Position, setting
         speaker2: speakers[1],
         mic1: micPosition,
         mic2: mic2Position,
-        room, settings, surfaceWeights, surfaceMaterials,
+        room, settings, surfaceWeights, surfaceMaterials, ceiling, roomObjects,
       };
       const res = computeFourIRFusion(input);
       setResult(res);
+      onFourIRResult?.(res);
 
       const allFusionPeaks = res.measurements.flatMap(m => {
         const isMic2 = m.label.includes('M2');

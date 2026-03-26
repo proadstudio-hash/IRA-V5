@@ -217,6 +217,7 @@ export function ResultsTables({ matchedPeaks, surfaceSummaries, mode, speedOfSou
                     <TableHead className="text-[11px]">P* (x,y,z)</TableHead>
                     <TableHead className="text-[11px]">|S-P*|</TableHead>
                     <TableHead className="text-[11px]">|P*-M|</TableHead>
+                    <TableHead className="text-[11px]" title="L_refl predicted = |S-P*| + |P*-M|">L_pred (m)</TableHead>
                     <TableHead className="text-[11px]">Bounds</TableHead>
                   </>
                 )}
@@ -279,6 +280,9 @@ export function ResultsTables({ matchedPeaks, surfaceSummaries, mode, speedOfSou
                         </TableCell>
                         <TableCell className="text-xs font-mono">
                           {mp.assigned ? mp.reflection!.micDistance.toFixed(3) : '-'}
+                        </TableCell>
+                        <TableCell className="text-xs font-mono">
+                          {mp.assigned ? (mp.reflection!.speakerDistance + mp.reflection!.micDistance).toFixed(3) : '-'}
                         </TableCell>
                         <TableCell className="text-xs">
                           {mp.assigned ? (

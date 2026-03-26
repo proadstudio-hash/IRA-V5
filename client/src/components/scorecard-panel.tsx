@@ -129,13 +129,13 @@ export function ScorecardPanel({ matchedPeaks, fusionOverlayPeaks, fusionPerIRPe
           detail={scorecard.itdg.firstSignificantPeak}
         />
         <RFZSection
-          title="RFZ Check (0-20 ms < -20 dB)"
+          title="RFZ (0-20 ms): PASS < -15 dB, WARN -15 to -10 dB, FAIL ≥ -10 dB"
           verdict={scorecard.rfz.verdict}
           worstDb={scorecard.rfz.worstDb}
           worstPeak={scorecard.rfz.worstPeak}
         />
         <CriticalSection
-          title="Critical Early (0-10 ms < -15 dB)"
+          title="Critical Early (0-10 ms): PASS < -12 dB, WARN -12 to -6 dB, FAIL ≥ -6 dB"
           verdict={scorecard.criticalEarly.verdict}
           worstDb={scorecard.criticalEarly.worstDb}
           worstPeak={scorecard.criticalEarly.worstPeak}

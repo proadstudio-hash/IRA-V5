@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Search } from "lucide-react";
-import type { MatchedPeak, RoomDimensions, Point3D } from "@shared/schema";
+import type { MatchedPeak, RoomDimensions, Point3D, CeilingConfig, RoomObject } from "@shared/schema";
 import { analyzeUnassignedPeaks, type UnassignedPeakDiagnostic } from "@/lib/unassigned-diagnostics";
 
 interface UnassignedPanelProps {
@@ -14,6 +14,8 @@ interface UnassignedPanelProps {
   surfaceWeights: Record<string, number>;
   surfaceMaterials: Record<string, string>;
   toleranceMs: number;
+  ceiling?: CeilingConfig;
+  roomObjects?: RoomObject[];
 }
 
 const classColors: Record<string, string> = {
@@ -26,11 +28,11 @@ const classColors: Record<string, string> = {
 };
 
 export function UnassignedPanel({
-  matchedPeaks, room, speakerPos, micPos, speedOfSound, surfaceWeights, surfaceMaterials, toleranceMs
+  matchedPeaks, room, speakerPos, micPos, speedOfSound, surfaceWeights, surfaceMaterials, toleranceMs, ceiling, roomObjects
 }: UnassignedPanelProps) {
   const diagnostics = useMemo<UnassignedPeakDiagnostic[]>(() => {
-    return analyzeUnassignedPeaks(matchedPeaks, room, speakerPos, micPos, speedOfSound, surfaceWeights, surfaceMaterials, toleranceMs);
-  }, [matchedPeaks, room, speakerPos, micPos, speedOfSound, surfaceWeights, surfaceMaterials, toleranceMs]);
+    return analyzeUnassignedPeaks(matchedPeaks, room, speakerPos, micPos, speedOfSound, surfaceWeights, surfaceMaterials, toleranceMs, ceiling, roomObjects);
+  }, [matchedPeaks, room, speakerPos, micPos, speedOfSound, surfaceWeights, surfaceMaterials, toleranceMs, ceiling, roomObjects]);
 
   if (diagnostics.length === 0) {
     return (

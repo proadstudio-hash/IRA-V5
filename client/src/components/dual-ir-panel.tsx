@@ -7,7 +7,7 @@ import { Separator } from "@/components/ui/separator";
 import { Layers, Upload, Play, CheckCircle } from "lucide-react";
 import { parseIRFile } from "@/lib/dsp";
 import { computeDualIRFusion, type DualIRInput, type DualIRResult } from "@/lib/fusion-dual-ir";
-import type { IRData, RoomDimensions, SpeakerConfig, Point3D, AnalysisSettings, MatchedPeak, FusionIRDataset } from "@shared/schema";
+import type { IRData, RoomDimensions, SpeakerConfig, Point3D, AnalysisSettings, MatchedPeak, FusionIRDataset, CeilingConfig, RoomObject } from "@shared/schema";
 import { useToast } from "@/hooks/use-toast";
 
 interface DualIRPanelProps {
@@ -18,11 +18,14 @@ interface DualIRPanelProps {
   surfaceWeights: Record<string, number>;
   surfaceMaterials: Record<string, string>;
   mainIrData: IRData | null;
+  ceiling?: CeilingConfig;
+  roomObjects?: RoomObject[];
   onFusionResult?: (fusionPeaks: MatchedPeak[]) => void;
   onFusionDatasets?: (datasets: FusionIRDataset[], fusionPeaks: MatchedPeak[]) => void;
+  onDualIRResult?: (result: DualIRResult | null) => void;
 }
 
-export function DualIRPanel({ room, speakers, micPosition, settings, surfaceWeights, surfaceMaterials, mainIrData, onFusionResult, onFusionDatasets }: DualIRPanelProps) {
+export function DualIRPanel({ room, speakers, micPosition, settings, surfaceWeights, surfaceMaterials, mainIrData, ceiling, roomObjects, onFusionResult, onFusionDatasets, onDualIRResult }: DualIRPanelProps) {
   const { toast } = useToast();
   const [irSpeaker2, setIrSpeaker2] = useState<IRData | null>(null);
   const [result, setResult] = useState<DualIRResult | null>(null);
@@ -32,6 +35,7 @@ export function DualIRPanel({ room, speakers, micPosition, settings, surfaceWeig
     setResult(null);
     onFusionResult?.([]);
     onFusionDatasets?.([], []);
+    onDualIRResult?.(null);
   }, [mainIrData, speakers, micPosition, room]);
 
   const handleFileUpload = useCallback(async () => {
@@ -75,10 +79,11 @@ export function DualIRPanel({ room, speakers, micPosition, settings, surfaceWeig
         speakerLeft: speakers[0],
         speakerRight: speakers[1],
         mic: micPosition,
-        room, settings, surfaceWeights, surfaceMaterials,
+        room, settings, surfaceWeights, surfaceMaterials, ceiling, roomObjects,
       };
       const res = computeDualIRFusion(input);
       setResult(res);
+      onDualIRResult?.(res);
 
       const allFusionPeaks = [...res.leftMatchedPeaks, ...res.rightMatchedPeaks];
       onFusionResult?.(allFusionPeaks);

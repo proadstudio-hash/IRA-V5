@@ -2,7 +2,8 @@ import { useMemo, useState } from "react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
-import type { RoomDimensions, Point3D, SpeakerConfig, MatchedPeak } from "@shared/schema";
+import type { RoomDimensions, Point3D, SpeakerConfig, MatchedPeak, RoomObject, CeilingConfig } from "@shared/schema";
+import { getCeilingHeightAt } from "@/lib/geometry";
 
 interface RoomViewProps {
   room: RoomDimensions;
@@ -11,9 +12,71 @@ interface RoomViewProps {
   mic2Position?: Point3D | null;
   matchedPeaks: MatchedPeak[];
   fusionOverlayPeaks?: MatchedPeak[];
+  roomObjects?: RoomObject[];
+  ceiling?: CeilingConfig;
   maxPeaks?: number;
   peakMatchTolerance?: number;
   speedOfSound?: number;
+}
+
+function getObjectViewPolygon(obj: RoomObject, viewMode: 'top' | 'side'): Point3D[] {
+  const rad = (obj.angle * Math.PI) / 180;
+  const cosA = Math.cos(rad);
+  const sinA = Math.sin(rad);
+  const pos = obj.position;
+  const dxDir = { x: cosA, y: sinA };
+  const dyDir = { x: -sinA, y: cosA };
+  const hd = obj.depth / 2;
+  const hw = obj.width / 2;
+  const hh = obj.height / 2;
+
+  if (viewMode === 'top') {
+    if (obj.type === 'monitor') {
+      return [
+        { x: pos.x + hw * dyDir.x, y: pos.y + hw * dyDir.y, z: pos.z },
+        { x: pos.x - hw * dyDir.x, y: pos.y - hw * dyDir.y, z: pos.z },
+      ];
+    }
+    return [
+      { x: pos.x + hd * dxDir.x + hw * dyDir.x, y: pos.y + hd * dxDir.y + hw * dyDir.y, z: pos.z },
+      { x: pos.x + hd * dxDir.x - hw * dyDir.x, y: pos.y + hd * dxDir.y - hw * dyDir.y, z: pos.z },
+      { x: pos.x - hd * dxDir.x - hw * dyDir.x, y: pos.y - hd * dxDir.y - hw * dyDir.y, z: pos.z },
+      { x: pos.x - hd * dxDir.x + hw * dyDir.x, y: pos.y - hd * dxDir.y + hw * dyDir.y, z: pos.z },
+    ];
+  } else {
+    const corners: { x: number; z: number }[] = [];
+    if (obj.type === 'desk') {
+      for (const sd of [-1, 1]) {
+        for (const sw of [-1, 1]) {
+          corners.push({ x: pos.x + sd * hd * dxDir.x + sw * hw * dyDir.x, z: pos.z });
+        }
+      }
+    } else if (obj.type === 'monitor') {
+      for (const sw of [-1, 1]) {
+        for (const sh of [-1, 1]) {
+          corners.push({ x: pos.x + sw * hw * dyDir.x, z: pos.z + sh * hh });
+        }
+      }
+    } else {
+      for (const sd of [-1, 1]) {
+        for (const sw of [-1, 1]) {
+          for (const sh of [-1, 1]) {
+            corners.push({ x: pos.x + sd * hd * dxDir.x + sw * hw * dyDir.x, z: pos.z + sh * hh });
+          }
+        }
+      }
+    }
+    const xs = corners.map(c => c.x);
+    const zs = corners.map(c => c.z);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minZ = Math.min(...zs), maxZ = Math.max(...zs);
+    return [
+      { x: minX, y: pos.y, z: maxZ },
+      { x: maxX, y: pos.y, z: maxZ },
+      { x: maxX, y: pos.y, z: minZ },
+      { x: minX, y: pos.y, z: minZ },
+    ];
+  }
 }
 
 type ViewMode = 'top' | 'side' | 'surface';
@@ -43,49 +106,85 @@ interface SurfacePanelConfig {
   reverseH: boolean;
   reverseV: boolean;
   project: (p: Point3D) => { u: number; v: number };
+  ceilingProfile?: { u: number; v: number }[];
 }
 
-function getSurfacePanels(room: RoomDimensions): SurfacePanelConfig[] {
+function getSurfacePanels(room: RoomDimensions, ceiling?: CeilingConfig): SurfacePanelConfig[] {
+  const maxH = ceiling && ceiling.type !== 'flat' ? ceiling.maxHeight : room.height;
+  const steps = 30;
+
+  function wallCeilingProfile(wallLabel: string): { u: number; v: number }[] | undefined {
+    if (!ceiling || ceiling.type === 'flat') return undefined;
+    const pts: { u: number; v: number }[] = [];
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      let u: number, z: number;
+      if (wallLabel === 'Front Wall') {
+        const y = t * room.width;
+        z = getCeilingHeightAt(0, y, room, ceiling);
+        u = room.width - y;
+      } else if (wallLabel === 'Rear Wall') {
+        const y = t * room.width;
+        z = getCeilingHeightAt(room.length, y, room, ceiling);
+        u = y;
+      } else if (wallLabel === 'Left Wall') {
+        const x = t * room.length;
+        z = getCeilingHeightAt(x, room.width, room, ceiling);
+        u = room.length - x;
+      } else {
+        const x = t * room.length;
+        z = getCeilingHeightAt(x, 0, room, ceiling);
+        u = x;
+      }
+      pts.push({ u, v: z });
+    }
+    return pts;
+  }
+
   return [
     {
       label: 'Front Wall',
       surfaceWidth: room.width,
-      surfaceHeight: room.height,
+      surfaceHeight: maxH,
       hAxisLabel: 'Width (Y)',
       vAxisLabel: 'Height (Z)',
       reverseH: true,
       reverseV: false,
       project: (p) => ({ u: room.width - p.y, v: p.z }),
+      ceilingProfile: wallCeilingProfile('Front Wall'),
     },
     {
       label: 'Rear Wall',
       surfaceWidth: room.width,
-      surfaceHeight: room.height,
+      surfaceHeight: maxH,
       hAxisLabel: 'Width (Y)',
       vAxisLabel: 'Height (Z)',
       reverseH: false,
       reverseV: false,
       project: (p) => ({ u: p.y, v: p.z }),
+      ceilingProfile: wallCeilingProfile('Rear Wall'),
     },
     {
       label: 'Left Wall',
       surfaceWidth: room.length,
-      surfaceHeight: room.height,
+      surfaceHeight: maxH,
       hAxisLabel: 'Length (X)',
       vAxisLabel: 'Height (Z)',
       reverseH: true,
       reverseV: false,
       project: (p) => ({ u: room.length - p.x, v: p.z }),
+      ceilingProfile: wallCeilingProfile('Left Wall'),
     },
     {
       label: 'Right Wall',
       surfaceWidth: room.length,
-      surfaceHeight: room.height,
+      surfaceHeight: maxH,
       hAxisLabel: 'Length (X)',
       vAxisLabel: 'Height (Z)',
       reverseH: false,
       reverseV: false,
       project: (p) => ({ u: p.x, v: p.z }),
+      ceilingProfile: wallCeilingProfile('Right Wall'),
     },
     {
       label: 'Ceiling',
@@ -154,8 +253,53 @@ function SurfacePanel({
   return (
     <div className="bg-background border rounded-md overflow-hidden" data-testid={`surface-panel-${config.label.toLowerCase().replace(/\s+/g, '-')}`}>
       <svg viewBox={`0 0 ${panelW} ${panelH}`} className="w-full" style={{ maxHeight: '200px' }}>
-        <rect x={ox} y={oy} width={drawW} height={drawH} fill="none" stroke={color} strokeWidth="1.5" strokeOpacity="0.4" />
-        <rect x={ox} y={oy} width={drawW} height={drawH} fill={color} fillOpacity="0.04" />
+        {config.ceilingProfile ? (
+          <g>
+            {(() => {
+              const sortedProfile = [...config.ceilingProfile].sort((a, b) => a.u - b.u);
+              const firstPt = sortedProfile[0];
+              const lastPt = sortedProfile[sortedProfile.length - 1];
+              const topEdge = [...sortedProfile].reverse();
+              return (
+                <>
+                  <polygon
+                    points={[
+                      `${ox},${oy + drawH}`,
+                      `${ox + drawW},${oy + drawH}`,
+                      ...topEdge.map(pt => {
+                        const px = ox + pt.u * s;
+                        const py = oy + (config.surfaceHeight - pt.v) * s;
+                        return `${px},${py}`;
+                      }),
+                    ].join(' ')}
+                    fill={color}
+                    fillOpacity="0.04"
+                    stroke="none"
+                  />
+                  <line x1={ox} y1={oy + drawH} x2={ox + drawW} y2={oy + drawH} stroke={color} strokeWidth="1.5" strokeOpacity="0.4" />
+                  <line x1={ox} y1={oy + drawH} x2={ox} y2={oy + (config.surfaceHeight - (firstPt?.v ?? config.surfaceHeight)) * s} stroke={color} strokeWidth="1.5" strokeOpacity="0.4" />
+                  <line x1={ox + drawW} y1={oy + drawH} x2={ox + drawW} y2={oy + (config.surfaceHeight - (lastPt?.v ?? config.surfaceHeight)) * s} stroke={color} strokeWidth="1.5" strokeOpacity="0.4" />
+                  <polyline
+                    points={sortedProfile.map(pt => {
+                      const px = ox + pt.u * s;
+                      const py = oy + (config.surfaceHeight - pt.v) * s;
+                      return `${px},${py}`;
+                    }).join(' ')}
+                    fill="none"
+                    stroke={color}
+                    strokeWidth="1.5"
+                    strokeOpacity="0.4"
+                  />
+                </>
+              );
+            })()}
+          </g>
+        ) : (
+          <g>
+            <rect x={ox} y={oy} width={drawW} height={drawH} fill="none" stroke={color} strokeWidth="1.5" strokeOpacity="0.4" />
+            <rect x={ox} y={oy} width={drawW} height={drawH} fill={color} fillOpacity="0.04" />
+          </g>
+        )}
 
         <text x={panelW / 2} y={12} textAnchor="middle" fill={color} fontSize="10" fontWeight="600">{config.label}</text>
 
@@ -241,7 +385,7 @@ function SurfacePanel({
   );
 }
 
-export function RoomView({ room, speakers, micPosition, mic2Position, matchedPeaks, fusionOverlayPeaks, maxPeaks = 10, peakMatchTolerance = 0.35, speedOfSound = 343 }: RoomViewProps) {
+export function RoomView({ room, speakers, micPosition, mic2Position, matchedPeaks, fusionOverlayPeaks, roomObjects, ceiling, maxPeaks = 10, peakMatchTolerance = 0.35, speedOfSound = 343 }: RoomViewProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('top');
   const [showCount, setShowCount] = useState(maxPeaks);
 
@@ -252,7 +396,8 @@ export function RoomView({ room, speakers, micPosition, mic2Position, matchedPea
   const dims = useMemo(() => {
     if (viewMode === 'surface') return { s: 1, offsetX: 0, offsetY: 0, roomW: 0, roomH: 0 };
     const roomW = viewMode === 'top' ? room.width : room.length;
-    const roomH = viewMode === 'top' ? room.length : room.height;
+    const maxCeilingH = ceiling && ceiling.type !== 'flat' ? ceiling.maxHeight : room.height;
+    const roomH = viewMode === 'top' ? room.length : maxCeilingH;
 
     const availW = svgWidth - padding * 2;
     const availH = svgHeight - padding * 2;
@@ -270,7 +415,7 @@ export function RoomView({ room, speakers, micPosition, mic2Position, matchedPea
       roomW,
       roomH,
     };
-  }, [room, viewMode]);
+  }, [room, viewMode, ceiling]);
 
   const clampToRoom = (p: Point3D): Point3D => ({
     x: Math.max(0, Math.min(p.x, room.length)),
@@ -311,7 +456,16 @@ export function RoomView({ room, speakers, micPosition, mic2Position, matchedPea
     return ['Front Wall', 'Rear Wall', 'Left Wall', 'Right Wall'];
   }, [viewMode]);
 
-  const surfacePanels = useMemo(() => getSurfacePanels(room), [room]);
+  const surfacePanels = useMemo(() => getSurfacePanels(room, ceiling), [room, ceiling]);
+
+  const matchesSurfacePanel = (surfaceLabel: string, panelLabel: string): boolean => {
+    if (surfaceLabel === panelLabel) return true;
+    if (surfaceLabel.includes('→')) {
+      const lastSurface = surfaceLabel.split('→').pop()!.trim();
+      return lastSurface === panelLabel;
+    }
+    return false;
+  };
 
   const peaksBySurface = useMemo(() => {
     const map: Record<string, MatchedPeak[]> = {};
@@ -320,9 +474,8 @@ export function RoomView({ room, speakers, micPosition, mic2Position, matchedPea
     }
     for (const mp of assignedPeaks) {
       if (!mp.reflection) continue;
-      const baseLabel = mp.reflection.surfaceLabel.split(' + ')[0];
       for (const panel of surfacePanels) {
-        if (baseLabel === panel.label || mp.reflection.surfaceLabel.includes(panel.label)) {
+        if (matchesSurfacePanel(mp.reflection.surfaceLabel, panel.label)) {
           map[panel.label].push(mp);
         }
       }
@@ -337,9 +490,8 @@ export function RoomView({ room, speakers, micPosition, mic2Position, matchedPea
     }
     for (const mp of fusionAssignedPeaks) {
       if (!mp.reflection) continue;
-      const baseLabel = mp.reflection.surfaceLabel.split(' + ')[0];
       for (const panel of surfacePanels) {
-        if (baseLabel === panel.label || mp.reflection.surfaceLabel.includes(panel.label)) {
+        if (matchesSurfacePanel(mp.reflection.surfaceLabel, panel.label)) {
           map[panel.label].push(mp);
         }
       }
@@ -413,15 +565,62 @@ export function RoomView({ room, speakers, micPosition, mic2Position, matchedPea
             className="w-full"
             style={{ maxHeight: '400px' }}
           >
-            <rect
-              x={dims.offsetX}
-              y={dims.offsetY}
-              width={dims.roomW * dims.s}
-              height={dims.roomH * dims.s}
-              fill="none"
-              stroke="hsl(var(--border))"
-              strokeWidth="2"
-            />
+            {viewMode === 'side' && ceiling && ceiling.type !== 'flat' ? (
+              <g>
+                <polygon
+                  points={(() => {
+                    const pts: string[] = [];
+                    pts.push(`${dims.offsetX},${dims.offsetY + dims.roomH * dims.s}`);
+                    pts.push(`${dims.offsetX + dims.roomW * dims.s},${dims.offsetY + dims.roomH * dims.s}`);
+                    const steps = 40;
+                    for (let i = steps; i >= 0; i--) {
+                      const x = (i / steps) * room.length;
+                      const z = getCeilingHeightAt(x, room.width / 2, room, ceiling);
+                      const svgX = dims.offsetX + x * dims.s;
+                      const svgY = dims.offsetY + (dims.roomH - z) * dims.s;
+                      pts.push(`${svgX},${svgY}`);
+                    }
+                    return pts.join(' ');
+                  })()}
+                  fill="none"
+                  stroke="hsl(var(--border))"
+                  strokeWidth="2"
+                />
+                {(ceiling.type === 'slope-y' || ceiling.type === 'v-x' || ceiling.type === 'vflat-x') && (() => {
+                  const pts: string[] = [];
+                  const steps = 40;
+                  for (let i = 0; i <= steps; i++) {
+                    const x = (i / steps) * room.length;
+                    const zMin = ceiling.type === 'slope-y'
+                      ? getCeilingHeightAt(x, 0, room, ceiling)
+                      : getCeilingHeightAt(x, 0, room, ceiling);
+                    const svgX = dims.offsetX + x * dims.s;
+                    const svgY = dims.offsetY + (dims.roomH - zMin) * dims.s;
+                    pts.push(`${svgX},${svgY}`);
+                  }
+                  return (
+                    <polyline
+                      points={pts.join(' ')}
+                      fill="none"
+                      stroke="hsl(var(--border))"
+                      strokeWidth="1"
+                      strokeDasharray="4 3"
+                      opacity="0.5"
+                    />
+                  );
+                })()}
+              </g>
+            ) : (
+              <rect
+                x={dims.offsetX}
+                y={dims.offsetY}
+                width={dims.roomW * dims.s}
+                height={dims.roomH * dims.s}
+                fill="none"
+                stroke="hsl(var(--border))"
+                strokeWidth="2"
+              />
+            )}
 
             {generateRulerTicks(dims.roomW, 0.5).map((t) => {
               const px = dims.offsetX + t * dims.s;
@@ -522,6 +721,61 @@ export function RoomView({ room, speakers, micPosition, mic2Position, matchedPea
                 >
                   {label}
                 </text>
+              );
+            })}
+
+            {roomObjects && roomObjects.length > 0 && viewMode !== 'surface' && roomObjects.map((obj, i) => {
+              const pts = getObjectViewPolygon(obj, viewMode);
+              const svgPts = pts.map(p => toSVG(p));
+              const isLine = pts.length === 2 || (obj.type === 'desk' && viewMode === 'side');
+              const center = toSVG(obj.position);
+
+              if (isLine && pts.length === 2) {
+                return (
+                  <g key={`obj-${i}`} data-testid={`room-object-${i}`}>
+                    <line
+                      x1={svgPts[0].x} y1={svgPts[0].y}
+                      x2={svgPts[1].x} y2={svgPts[1].y}
+                      stroke="hsl(30 90% 50%)"
+                      strokeWidth="2.5"
+                      strokeOpacity="0.8"
+                    />
+                    <text
+                      x={center.x} y={center.y - 8}
+                      textAnchor="middle"
+                      fill="hsl(30 90% 50%)"
+                      fontSize="7"
+                      fontWeight="600"
+                      opacity="0.9"
+                    >
+                      {obj.label}
+                    </text>
+                  </g>
+                );
+              }
+
+              const pointsStr = svgPts.map(p => `${p.x},${p.y}`).join(' ');
+              return (
+                <g key={`obj-${i}`} data-testid={`room-object-${i}`}>
+                  <polygon
+                    points={pointsStr}
+                    fill="hsl(30 90% 50%)"
+                    fillOpacity="0.15"
+                    stroke="hsl(30 90% 50%)"
+                    strokeWidth="1.5"
+                    strokeOpacity="0.7"
+                  />
+                  <text
+                    x={center.x} y={center.y + 3}
+                    textAnchor="middle"
+                    fill="hsl(30 90% 50%)"
+                    fontSize="7"
+                    fontWeight="600"
+                    opacity="0.9"
+                  >
+                    {obj.label}
+                  </text>
+                </g>
               );
             })}
 

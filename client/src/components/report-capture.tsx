@@ -3,16 +3,18 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
   ReferenceLine, ReferenceArea, ResponsiveContainer, Legend
 } from "recharts";
-import type { ETCPoint, MatchedPeak, SurfaceSummary, RoomDimensions, SpeakerConfig, Point3D, IRData, FusionIRDataset, Peak } from "@shared/schema";
+import type { ETCPoint, MatchedPeak, SurfaceSummary, RoomDimensions, SpeakerConfig, Point3D, IRData, FusionIRDataset, Peak, CeilingConfig, RoomObject, ModalAnalysisResult, PressureMapData } from "@shared/schema";
 import { computeDecayMetrics } from "@/lib/decay-metrics";
 import { computeClarityMetrics } from "@/lib/clarity-metrics";
 import { computeFrequencyResponse, computeCombSignatures } from "@/lib/frequency-analysis";
 import { computeScorecard } from "@/lib/scorecard";
 import { analyzeUnassignedPeaks } from "@/lib/unassigned-diagnostics";
 import { computeSurfaceHeatmaps } from "@/lib/surface-heatmaps";
+import { getCeilingHeightAt } from "@/lib/geometry";
 import { findDirectArrival, computeETC } from "@/lib/dsp";
 import { mergeAndDeduplicatePeaks } from "@/components/results-tables";
 import { computeSurfaceSummaries } from "@/lib/matching";
+import { computePressureMap, computeDrivenResponse } from "@/lib/modal-analysis";
 
 interface ReportCaptureProps {
   etcData: ETCPoint[];
@@ -34,6 +36,9 @@ interface ReportCaptureProps {
   fusionOverlayPeaks?: MatchedPeak[];
   fusionMatchedPeaks?: MatchedPeak[];
   fusionPerIRPeaks?: { label: string; peaks: Peak[] }[];
+  ceiling?: CeilingConfig;
+  roomObjects?: RoomObject[];
+  modalResult?: ModalAnalysisResult | null;
 }
 
 export interface ReportCaptureHandle {
@@ -49,6 +54,13 @@ export interface ReportCaptureHandle {
   getClarityElement: () => HTMLElement | null;
   getUnassignedElement: () => HTMLElement | null;
   getHeatmapElement: () => HTMLElement | null;
+  getCriticalZoneElement: () => HTMLElement | null;
+  getModalElement: () => HTMLElement | null;
+  getModalFreqResponseElement: () => HTMLElement | null;
+  getModalMapsElement: () => HTMLElement | null;
+  getModalCriticalMapsElement: () => HTMLElement | null;
+  getModalGlobalElement: () => HTMLElement | null;
+  getModalSeatElement: () => HTMLElement | null;
 }
 
 const FUSION_COLORS = ['#ef4444', '#3b82f6', '#f59e0b', '#10b981'];
@@ -80,7 +92,67 @@ function genTicks(length: number, step: number): number[] {
 const thStyle: React.CSSProperties = { border: '1px solid #ddd', padding: '4px', textAlign: 'left' as const, fontSize: '10px', background: '#f0f0f0' };
 const tdStyle: React.CSSProperties = { border: '1px solid #ddd', padding: '3px', fontSize: '10px' };
 
-function RoomSVG({ room, speakers, micPosition, mic2Position, matchedPeaks, fusionOverlayPeaks, viewMode }: {
+function getReportObjectPolygon(obj: RoomObject, viewMode: 'top' | 'side'): Point3D[] {
+  const rad = (obj.angle * Math.PI) / 180;
+  const cosA = Math.cos(rad);
+  const sinA = Math.sin(rad);
+  const pos = obj.position;
+  const dxDir = { x: cosA, y: sinA };
+  const dyDir = { x: -sinA, y: cosA };
+  const hd = obj.depth / 2;
+  const hw = obj.width / 2;
+  const hh = obj.height / 2;
+
+  if (viewMode === 'top') {
+    if (obj.type === 'monitor') {
+      return [
+        { x: pos.x + hw * dyDir.x, y: pos.y + hw * dyDir.y, z: pos.z },
+        { x: pos.x - hw * dyDir.x, y: pos.y - hw * dyDir.y, z: pos.z },
+      ];
+    }
+    return [
+      { x: pos.x + hd * dxDir.x + hw * dyDir.x, y: pos.y + hd * dxDir.y + hw * dyDir.y, z: pos.z },
+      { x: pos.x + hd * dxDir.x - hw * dyDir.x, y: pos.y + hd * dxDir.y - hw * dyDir.y, z: pos.z },
+      { x: pos.x - hd * dxDir.x - hw * dyDir.x, y: pos.y - hd * dxDir.y - hw * dyDir.y, z: pos.z },
+      { x: pos.x - hd * dxDir.x + hw * dyDir.x, y: pos.y - hd * dxDir.y + hw * dyDir.y, z: pos.z },
+    ];
+  } else {
+    const corners: { x: number; z: number }[] = [];
+    if (obj.type === 'desk') {
+      for (const sd of [-1, 1]) {
+        for (const sw of [-1, 1]) {
+          corners.push({ x: pos.x + sd * hd * dxDir.x + sw * hw * dyDir.x, z: pos.z });
+        }
+      }
+    } else if (obj.type === 'monitor') {
+      for (const sw of [-1, 1]) {
+        for (const sh of [-1, 1]) {
+          corners.push({ x: pos.x + sw * hw * dyDir.x, z: pos.z + sh * hh });
+        }
+      }
+    } else {
+      for (const sd of [-1, 1]) {
+        for (const sw of [-1, 1]) {
+          for (const sh of [-1, 1]) {
+            corners.push({ x: pos.x + sd * hd * dxDir.x + sw * hw * dyDir.x, z: pos.z + sh * hh });
+          }
+        }
+      }
+    }
+    const xs = corners.map(c => c.x);
+    const zs = corners.map(c => c.z);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minZ = Math.min(...zs), maxZ = Math.max(...zs);
+    return [
+      { x: minX, y: pos.y, z: maxZ },
+      { x: maxX, y: pos.y, z: maxZ },
+      { x: maxX, y: pos.y, z: minZ },
+      { x: minX, y: pos.y, z: minZ },
+    ];
+  }
+}
+
+function RoomSVG({ room, speakers, micPosition, mic2Position, matchedPeaks, fusionOverlayPeaks, viewMode, ceiling, roomObjects }: {
   room: RoomDimensions;
   speakers: SpeakerConfig[];
   micPosition: Point3D;
@@ -88,13 +160,16 @@ function RoomSVG({ room, speakers, micPosition, mic2Position, matchedPeaks, fusi
   matchedPeaks: MatchedPeak[];
   fusionOverlayPeaks?: MatchedPeak[];
   viewMode: 'top' | 'side';
+  ceiling?: CeilingConfig;
+  roomObjects?: RoomObject[];
 }) {
-  const padding = 50;
-  const svgWidth = 600;
-  const svgHeight = 450;
+  const padding = 70;
+  const svgWidth = 640;
+  const svgHeight = 460;
 
+  const maxCeilingH = ceiling && ceiling.type !== 'flat' ? ceiling.maxHeight : room.height;
   const roomW = viewMode === 'top' ? room.width : room.length;
-  const roomH = viewMode === 'top' ? room.length : room.height;
+  const roomH = viewMode === 'top' ? room.length : maxCeilingH;
   const availW = svgWidth - padding * 2;
   const availH = svgHeight - padding * 2;
   const scaleX = availW / roomW;
@@ -103,11 +178,18 @@ function RoomSVG({ room, speakers, micPosition, mic2Position, matchedPeaks, fusi
   const offsetX = padding + (availW - roomW * s) / 2;
   const offsetY = padding + (availH - roomH * s) / 2;
 
-  const toSVG = (p: Point3D): { x: number; y: number } => {
+  const clampToRoom = (p: Point3D): Point3D => ({
+    x: Math.max(0, Math.min(p.x, room.length)),
+    y: Math.max(0, Math.min(p.y, room.width)),
+    z: Math.max(0, Math.min(p.z, maxCeilingH)),
+  });
+
+  const toSVG = (p: Point3D, clamp: boolean = false): { x: number; y: number } => {
+    const pt = clamp ? clampToRoom(p) : p;
     if (viewMode === 'top') {
-      return { x: offsetX + (room.width - p.y) * s, y: offsetY + p.x * s };
+      return { x: offsetX + (room.width - pt.y) * s, y: offsetY + pt.x * s };
     }
-    return { x: offsetX + p.x * s, y: offsetY + (roomH - p.z) * s };
+    return { x: offsetX + pt.x * s, y: offsetY + (roomH - pt.z) * s };
   };
 
   const surfaceLabels = viewMode === 'side'
@@ -118,8 +200,44 @@ function RoomSVG({ room, speakers, micPosition, mic2Position, matchedPeaks, fusi
 
   return (
     <svg width={svgWidth} height={svgHeight} xmlns="http://www.w3.org/2000/svg" style={{ background: '#fff' }}>
-      <rect x={offsetX} y={offsetY} width={roomW * s} height={roomH * s}
-        fill="none" stroke="#333" strokeWidth="2" />
+      {viewMode === 'side' && ceiling && ceiling.type !== 'flat' ? (
+        <g>
+          <polygon
+            points={(() => {
+              const pts: string[] = [];
+              pts.push(`${offsetX},${offsetY + roomH * s}`);
+              pts.push(`${offsetX + roomW * s},${offsetY + roomH * s}`);
+              const steps = 40;
+              for (let i = steps; i >= 0; i--) {
+                const x = (i / steps) * room.length;
+                const z = getCeilingHeightAt(x, room.width / 2, room, ceiling);
+                const svgX = offsetX + x * s;
+                const svgY = offsetY + (roomH - z) * s;
+                pts.push(`${svgX},${svgY}`);
+              }
+              return pts.join(' ');
+            })()}
+            fill="none" stroke="#333" strokeWidth="2"
+          />
+          {(ceiling.type === 'slope-y' || ceiling.type === 'v-x' || ceiling.type === 'vflat-x') && (() => {
+            const pts: string[] = [];
+            const steps = 40;
+            for (let i = 0; i <= steps; i++) {
+              const x = (i / steps) * room.length;
+              const zEdge = getCeilingHeightAt(x, 0, room, ceiling);
+              const svgX = offsetX + x * s;
+              const svgY = offsetY + (roomH - zEdge) * s;
+              pts.push(`${svgX},${svgY}`);
+            }
+            return (
+              <polyline points={pts.join(' ')} fill="none" stroke="#999" strokeWidth="1" strokeDasharray="4 3" />
+            );
+          })()}
+        </g>
+      ) : (
+        <rect x={offsetX} y={offsetY} width={roomW * s} height={roomH * s}
+          fill="none" stroke="#333" strokeWidth="2" />
+      )}
 
       {genTicks(roomW, 0.5).map((t) => {
         const px = offsetX + t * s;
@@ -179,9 +297,9 @@ function RoomSVG({ room, speakers, micPosition, mic2Position, matchedPeaks, fusi
 
       {assignedPeaks.map((mp, i) => {
         if (!mp.reflection) return null;
-        const spkPos = toSVG(mp.reflection.speakerPosition);
-        const refPos = toSVG(mp.reflection.reflectionPoint);
-        const micPos = toSVG(micPosition);
+        const spkPos = toSVG(mp.reflection.speakerPosition, true);
+        const refPos = toSVG(mp.reflection.reflectionPoint, true);
+        const micPos = toSVG(micPosition, true);
         const color = getSurfaceColor(mp.reflection.surfaceLabel);
         return (
           <g key={i}>
@@ -233,10 +351,10 @@ function RoomSVG({ room, speakers, micPosition, mic2Position, matchedPeaks, fusi
 
       {fusionOverlayPeaks && fusionOverlayPeaks.filter(mp => mp.assigned && mp.reflection).map((mp, i) => {
         if (!mp.reflection) return null;
-        const spkPos = toSVG(mp.reflection.speakerPosition);
-        const refPos = toSVG(mp.reflection.reflectionPoint);
+        const spkPos = toSVG(mp.reflection.speakerPosition, true);
+        const refPos = toSVG(mp.reflection.reflectionPoint, true);
         const targetMic = (mp.targetMicIndex === 1 && mic2Position) ? mic2Position : micPosition;
-        const micPos = toSVG(targetMic);
+        const micPos = toSVG(targetMic, true);
         const color = getSurfaceColor(mp.reflection.surfaceLabel);
         const opacity = 0.25 + mp.confidence * 0.35;
         const sz = 4;
@@ -249,6 +367,29 @@ function RoomSVG({ room, speakers, micPosition, mic2Position, matchedPeaks, fusi
             <polygon
               points={`${refPos.x},${refPos.y - sz} ${refPos.x + sz},${refPos.y} ${refPos.x},${refPos.y + sz} ${refPos.x - sz},${refPos.y}`}
               fill={color} fillOpacity={opacity} stroke={color} strokeWidth="0.8" strokeOpacity={opacity * 0.8} />
+          </g>
+        );
+      })}
+
+      {roomObjects && roomObjects.length > 0 && roomObjects.map((obj, i) => {
+        const pts = getReportObjectPolygon(obj, viewMode);
+        const svgPts = pts.map(p => toSVG(p));
+        const isLine = pts.length === 2 || (obj.type === 'desk' && viewMode === 'side');
+        const center = toSVG(obj.position);
+        if (isLine && pts.length === 2) {
+          return (
+            <g key={`obj-${i}`}>
+              <line x1={svgPts[0].x} y1={svgPts[0].y} x2={svgPts[1].x} y2={svgPts[1].y}
+                stroke="#e67e22" strokeWidth="2.5" strokeOpacity="0.8" />
+              <text x={center.x} y={center.y - 8} textAnchor="middle" fill="#e67e22" fontSize="8" fontWeight="600">{obj.label}</text>
+            </g>
+          );
+        }
+        const pointsStr = svgPts.map(p => `${p.x},${p.y}`).join(' ');
+        return (
+          <g key={`obj-${i}`}>
+            <polygon points={pointsStr} fill="#e67e22" fillOpacity="0.15" stroke="#e67e22" strokeWidth="1.5" strokeOpacity="0.7" />
+            <text x={center.x} y={center.y + 3} textAnchor="middle" fill="#e67e22" fontSize="8" fontWeight="600">{obj.label}</text>
           </g>
         );
       })}
@@ -277,69 +418,106 @@ interface SurfacePanelConfig {
   reverseH: boolean;
   reverseV: boolean;
   project: (p: Point3D) => { u: number; v: number };
+  ceilingProfile?: { u: number; v: number }[];
 }
 
-function getSurfacePanels(room: RoomDimensions): SurfacePanelConfig[] {
+function getSurfacePanels(room: RoomDimensions, ceiling?: CeilingConfig): SurfacePanelConfig[] {
+  const maxH = ceiling && ceiling.type !== 'flat' ? ceiling.maxHeight : room.height;
+  const steps = 30;
+
+  function wallCeilingProfile(wallLabel: string): { u: number; v: number }[] | undefined {
+    if (!ceiling || ceiling.type === 'flat') return undefined;
+    const pts: { u: number; v: number }[] = [];
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      let u: number, z: number;
+      if (wallLabel === 'Front Wall') {
+        const y = t * room.width;
+        z = getCeilingHeightAt(0, y, room, ceiling);
+        u = room.width - y;
+      } else if (wallLabel === 'Rear Wall') {
+        const y = t * room.width;
+        z = getCeilingHeightAt(room.length, y, room, ceiling);
+        u = y;
+      } else if (wallLabel === 'Left Wall') {
+        const x = t * room.length;
+        z = getCeilingHeightAt(x, room.width, room, ceiling);
+        u = room.length - x;
+      } else {
+        const x = t * room.length;
+        z = getCeilingHeightAt(x, 0, room, ceiling);
+        u = x;
+      }
+      pts.push({ u, v: z });
+    }
+    return pts;
+  }
+
   return [
     {
       label: 'Front Wall',
       surfaceWidth: room.width,
-      surfaceHeight: room.height,
+      surfaceHeight: maxH,
       reverseH: true,
       reverseV: false,
       project: (p) => ({ u: room.width - p.y, v: p.z }),
+      ceilingProfile: wallCeilingProfile('Front Wall'),
     },
     {
       label: 'Rear Wall',
       surfaceWidth: room.width,
-      surfaceHeight: room.height,
+      surfaceHeight: maxH,
       reverseH: false,
       reverseV: false,
       project: (p) => ({ u: p.y, v: p.z }),
+      ceilingProfile: wallCeilingProfile('Rear Wall'),
     },
     {
       label: 'Left Wall',
       surfaceWidth: room.length,
-      surfaceHeight: room.height,
+      surfaceHeight: maxH,
       reverseH: true,
       reverseV: false,
       project: (p) => ({ u: room.length - p.x, v: p.z }),
+      ceilingProfile: wallCeilingProfile('Left Wall'),
     },
     {
       label: 'Right Wall',
       surfaceWidth: room.length,
-      surfaceHeight: room.height,
+      surfaceHeight: maxH,
       reverseH: false,
       reverseV: false,
       project: (p) => ({ u: p.x, v: p.z }),
-    },
-    {
-      label: 'Floor',
-      surfaceWidth: room.length,
-      surfaceHeight: room.width,
-      reverseH: false,
-      reverseV: false,
-      project: (p) => ({ u: p.x, v: p.y }),
+      ceilingProfile: wallCeilingProfile('Right Wall'),
     },
     {
       label: 'Ceiling',
-      surfaceWidth: room.length,
-      surfaceHeight: room.width,
-      reverseH: false,
+      surfaceWidth: room.width,
+      surfaceHeight: room.length,
+      reverseH: true,
       reverseV: true,
-      project: (p) => ({ u: p.x, v: room.width - p.y }),
+      project: (p) => ({ u: room.width - p.y, v: room.length - p.x }),
+    },
+    {
+      label: 'Floor',
+      surfaceWidth: room.width,
+      surfaceHeight: room.length,
+      reverseH: true,
+      reverseV: true,
+      project: (p) => ({ u: room.width - p.y, v: room.length - p.x }),
     },
   ];
 }
 
-function RoomSurfaceSVG({ room, matchedPeaks, fusionOverlayPeaks, peakMatchTolerance, speedOfSound }: {
+function RoomSurfaceSVG({ room, matchedPeaks, fusionOverlayPeaks, peakMatchTolerance, speedOfSound, ceiling }: {
   room: RoomDimensions;
   matchedPeaks: MatchedPeak[];
   fusionOverlayPeaks?: MatchedPeak[];
   peakMatchTolerance: number;
   speedOfSound: number;
+  ceiling?: CeilingConfig;
 }) {
-  const panels = getSurfacePanels(room);
+  const panels = getSurfacePanels(room, ceiling);
   const cols = 3;
   const rows = 2;
   const cellW = 240;
@@ -367,9 +545,16 @@ function RoomSurfaceSVG({ room, matchedPeaks, fusionOverlayPeaks, peakMatchToler
         const dx = ox + 10 + (innerW - drawW) / 2;
         const dy = oy + 20 + (innerH - drawH) / 2;
 
-        const surfacePeaks = matchedPeaks.filter(mp =>
-          mp.assigned && mp.reflection && mp.reflection.surfaceLabel.includes(panel.label)
-        );
+        const surfacePeaks = matchedPeaks.filter(mp => {
+          if (!mp.assigned || !mp.reflection) return false;
+          const label = mp.reflection.surfaceLabel;
+          if (label === panel.label) return true;
+          if (label.includes('→')) {
+            const lastSurface = label.split('→').pop()!.trim();
+            return lastSurface === panel.label;
+          }
+          return false;
+        });
 
         return (
           <g key={panel.label}>
@@ -377,28 +562,53 @@ function RoomSurfaceSVG({ room, matchedPeaks, fusionOverlayPeaks, peakMatchToler
             <text x={ox + cellW / 2} y={oy + 14} textAnchor="middle" fill="#333" fontSize="10" fontWeight="600">
               {panel.label}
             </text>
-            <rect x={dx} y={dy} width={drawW} height={drawH} fill="none" stroke="#999" strokeWidth="1" />
+            {panel.ceilingProfile ? (
+              (() => {
+                const sorted = [...panel.ceilingProfile].sort((a, b) => a.u - b.u);
+                const firstPt = sorted[0];
+                const lastPt = sorted[sorted.length - 1];
+                return (
+                  <g>
+                    <line x1={dx} y1={dy + drawH} x2={dx + drawW} y2={dy + drawH} stroke="#999" strokeWidth="1" />
+                    <line x1={dx} y1={dy + drawH} x2={dx} y2={dy + drawH - (firstPt?.v ?? panel.surfaceHeight) / panel.surfaceHeight * drawH} stroke="#999" strokeWidth="1" />
+                    <line x1={dx + drawW} y1={dy + drawH} x2={dx + drawW} y2={dy + drawH - (lastPt?.v ?? panel.surfaceHeight) / panel.surfaceHeight * drawH} stroke="#999" strokeWidth="1" />
+                    <polyline
+                      points={sorted.map(pt => {
+                        const px = dx + pt.u / panel.surfaceWidth * drawW;
+                        const py = dy + drawH - pt.v / panel.surfaceHeight * drawH;
+                        return `${px},${py}`;
+                      }).join(' ')}
+                      fill="none" stroke="#999" strokeWidth="1"
+                    />
+                  </g>
+                );
+              })()
+            ) : (
+              <rect x={dx} y={dy} width={drawW} height={drawH} fill="none" stroke="#999" strokeWidth="1" />
+            )}
 
             {genTicks(panel.surfaceWidth, 0.5).map((t) => {
-              const px = dx + (panel.reverseH ? drawW - t * sc : t * sc);
+              const px = dx + t * sc;
               if (px < dx - 0.5 || px > dx + drawW + 0.5) return null;
               const isMajor = Math.abs(t - Math.round(t)) < 0.01;
+              const label = panel.reverseH ? (panel.surfaceWidth - t) : t;
               return (
                 <g key={`h-${panel.label}-${t}`}>
                   <line x1={px} y1={dy + drawH} x2={px} y2={dy + drawH + (isMajor ? 5 : 3)} stroke="#999" strokeWidth="0.5" />
-                  {isMajor && <text x={px} y={dy + drawH + 12} textAnchor="middle" fill="#999" fontSize="6">{t.toFixed(0)}</text>}
+                  {isMajor && <text x={px} y={dy + drawH + 12} textAnchor="middle" fill="#999" fontSize="6">{label.toFixed(0)}m</text>}
                 </g>
               );
             })}
 
             {genTicks(panel.surfaceHeight, 0.5).map((t) => {
-              const py = dy + (panel.reverseV ? t * sc : drawH - t * sc);
+              const py = dy + (panel.surfaceHeight - t) * sc;
               if (py < dy - 0.5 || py > dy + drawH + 0.5) return null;
               const isMajor = Math.abs(t - Math.round(t)) < 0.01;
+              const label = panel.reverseV ? (panel.surfaceHeight - t) : t;
               return (
                 <g key={`v-${panel.label}-${t}`}>
                   <line x1={dx - (isMajor ? 5 : 3)} y1={py} x2={dx} y2={py} stroke="#999" strokeWidth="0.5" />
-                  {isMajor && <text x={dx - 7} y={py + 3} textAnchor="end" fill="#999" fontSize="6">{t.toFixed(0)}</text>}
+                  {isMajor && <text x={dx - 7} y={py + 3} textAnchor="end" fill="#999" fontSize="6">{label.toFixed(0)}m</text>}
                 </g>
               );
             })}
@@ -406,8 +616,10 @@ function RoomSurfaceSVG({ room, matchedPeaks, fusionOverlayPeaks, peakMatchToler
             {surfacePeaks.map((mp, pi) => {
               if (!mp.reflection) return null;
               const proj = panel.project(mp.reflection.reflectionPoint);
-              const px = dx + (panel.reverseH ? drawW - proj.u * sc : proj.u * sc);
-              const py = dy + (panel.reverseV ? proj.v * sc : drawH - proj.v * sc);
+              const clampU = Math.max(0, Math.min(proj.u, panel.surfaceWidth));
+              const clampV = Math.max(0, Math.min(proj.v, panel.surfaceHeight));
+              const px = dx + clampU * sc;
+              const py = dy + (panel.surfaceHeight - clampV) * sc;
               const color = getSurfaceColor(mp.reflection.surfaceLabel);
               const zoneR = errorRadiusMeters * sc;
 
@@ -420,12 +632,20 @@ function RoomSurfaceSVG({ room, matchedPeaks, fusionOverlayPeaks, peakMatchToler
             })}
 
             {fusionOverlayPeaks && fusionOverlayPeaks
-              .filter(mp => mp.assigned && mp.reflection && mp.reflection.surfaceLabel.includes(panel.label))
+              .filter(mp => {
+                if (!mp.assigned || !mp.reflection) return false;
+                const label = mp.reflection.surfaceLabel;
+                if (label === panel.label) return true;
+                if (label.includes('→')) return label.split('→').pop()!.trim() === panel.label;
+                return false;
+              })
               .map((mp, fi) => {
                 if (!mp.reflection) return null;
                 const proj = panel.project(mp.reflection.reflectionPoint);
-                const px = dx + (panel.reverseH ? drawW - proj.u * sc : proj.u * sc);
-                const py = dy + (panel.reverseV ? proj.v * sc : drawH - proj.v * sc);
+                const fClampU = Math.max(0, Math.min(proj.u, panel.surfaceWidth));
+                const fClampV = Math.max(0, Math.min(proj.v, panel.surfaceHeight));
+                const px = dx + fClampU * sc;
+                const py = dy + (panel.surfaceHeight - fClampV) * sc;
                 const color = getSurfaceColor(mp.reflection.surfaceLabel);
                 const zoneR = errorRadiusMeters * sc;
                 const opacity = 0.2 + mp.confidence * 0.35;
@@ -458,15 +678,33 @@ function reportHeatColor(value: number): string {
   return `rgb(${r},${g},${b})`;
 }
 
-const RPT_AXIS_LABELS: Record<string, string> = { x: 'Depth', y: 'Width', z: 'Height' };
+function reportCriticalZoneColor(value: number): string {
+  if (value < 0.01) return 'rgb(235,245,235)';
+  let r: number, g: number, b: number;
+  if (value < 0.5) {
+    const t = value / 0.5;
+    r = Math.round(80 + 175 * t);
+    g = Math.round(200 - 10 * t);
+    b = Math.round(80 * (1 - t));
+  } else {
+    const t = (value - 0.5) / 0.5;
+    r = 255;
+    g = Math.round(190 * (1 - t));
+    b = 0;
+  }
+  return `rgb(${r},${g},${b})`;
+}
 
-function HeatmapSVG({ room, matchedPeaks, speedOfSound, peakMatchTolerance }: {
+function ReportHeatmapGrid({ room, matchedPeaks, speedOfSound, peakMatchTolerance, ceiling, colorFn = reportHeatColor, idPrefix = 'rpt' }: {
   room: RoomDimensions;
   matchedPeaks: MatchedPeak[];
   speedOfSound: number;
   peakMatchTolerance: number;
+  ceiling?: CeilingConfig;
+  colorFn?: (v: number) => string;
+  idPrefix?: string;
 }) {
-  const heatmaps = computeSurfaceHeatmaps(matchedPeaks, room, speedOfSound, peakMatchTolerance);
+  const heatmaps = computeSurfaceHeatmaps(matchedPeaks, room, speedOfSound, peakMatchTolerance, 30, ceiling);
   const hmWithData = heatmaps.filter(h => h.reflectionPoints.length > 0);
   if (hmWithData.length === 0) return null;
 
@@ -505,8 +743,8 @@ function HeatmapSVG({ room, matchedPeaks, speedOfSound, peakMatchTolerance }: {
           const { dw, dh } = panelDrawDims(hm);
           const gcW = dw / hm.gridWidth;
           const gcH = dh / hm.gridHeight;
-          const filterId = `rpt-blur-${idx}`;
-          const clipId = `rpt-clip-${idx}`;
+          const filterId = `${idPrefix}-blur-${idx}`;
+          const clipId = `${idPrefix}-clip-${idx}`;
           const col = idx % cols;
           const row = Math.floor(idx / cols);
           const ox = pad + col * (panelW + pad);
@@ -519,7 +757,32 @@ function HeatmapSVG({ room, matchedPeaks, speedOfSound, peakMatchTolerance }: {
                 <feGaussianBlur stdDeviation={`${gcW * 0.6} ${gcH * 0.6}`} />
               </filter>
               <clipPath id={clipId}>
-                <rect x={dxC} y={dyC} width={dw} height={dh} />
+                {hm.ceilingProfile ? (
+                  <polygon points={(() => {
+                    const hmULen = hm.uRange[1] - hm.uRange[0];
+                    const hmVLen = hm.vRange[1] - hm.vRange[0];
+                    const cMapU = (u: number) => {
+                      const frac = (u - hm.uRange[0]) / hmULen;
+                      return hm.reverseH ? dxC + (1 - frac) * dw : dxC + frac * dw;
+                    };
+                    const cMapV = (v: number) => {
+                      const frac = (v - hm.vRange[0]) / hmVLen;
+                      return hm.reverseV ? dyC + frac * dh : dyC + (1 - frac) * dh;
+                    };
+                    const mapped = hm.ceilingProfile!.map(pt => ({
+                      px: cMapU(pt.u),
+                      py: cMapV(pt.v),
+                    }));
+                    mapped.sort((a, b) => b.px - a.px);
+                    return [
+                      `${dxC},${dyC + dh}`,
+                      `${dxC + dw},${dyC + dh}`,
+                      ...mapped.map(p => `${p.px},${p.py}`),
+                    ].join(' ');
+                  })()} />
+                ) : (
+                  <rect x={dxC} y={dyC} width={dw} height={dh} />
+                )}
               </clipPath>
             </g>
           );
@@ -538,6 +801,21 @@ function HeatmapSVG({ room, matchedPeaks, speedOfSound, peakMatchTolerance }: {
         const dx = ox + (panelW - dw) / 2;
         const dy = oy + 22;
 
+        const rMapU = (u: number) => {
+          const frac = (u - hm.uRange[0]) / uLen;
+          return hm.reverseH ? dx + (1 - frac) * dw : dx + frac * dw;
+        };
+        const rMapV = (v: number) => {
+          const frac = (v - hm.vRange[0]) / vLen;
+          return hm.reverseV ? dy + frac * dh : dy + (1 - frac) * dh;
+        };
+        const rMapCellI = (i: number) => {
+          return hm.reverseH ? dx + (hm.gridWidth - 1 - i) * gridCellW : dx + i * gridCellW;
+        };
+        const rMapCellJ = (j: number) => {
+          return hm.reverseV ? dy + j * gridCellH : dy + (hm.gridHeight - 1 - j) * gridCellH;
+        };
+
         return (
           <g key={hm.surfaceLabel}>
             <rect x={ox} y={oy} width={panelW} height={panelH} fill="#fafafa" stroke="#ddd" strokeWidth="1" rx="3" />
@@ -545,26 +823,51 @@ function HeatmapSVG({ room, matchedPeaks, speedOfSound, peakMatchTolerance }: {
               {hm.surfaceLabel} ({hm.reflectionPoints.length} pts)
             </text>
 
-            <g filter={`url(#rpt-blur-${idx})`} clipPath={`url(#rpt-clip-${idx})`}>
+            <g filter={`url(#${idPrefix}-blur-${idx})`} clipPath={`url(#${idPrefix}-clip-${idx})`}>
               {hm.grid.map((gridRow, j) =>
                 gridRow.map((cell, i) => (
                   <rect
                     key={`g-${j}-${i}`}
-                    x={dx + i * gridCellW}
-                    y={dy + (hm.gridHeight - 1 - j) * gridCellH}
+                    x={rMapCellI(i)}
+                    y={rMapCellJ(j)}
                     width={gridCellW + 0.5}
                     height={gridCellH + 0.5}
-                    fill={reportHeatColor(cell.value)}
+                    fill={colorFn(cell.value)}
                   />
                 ))
               )}
             </g>
 
-            <rect x={dx} y={dy} width={dw} height={dh} fill="none" stroke="#666" strokeWidth="1" />
+            {hm.ceilingProfile ? (
+              <g>
+                <line x1={dx} y1={dy + dh} x2={dx + dw} y2={dy + dh} stroke="#666" strokeWidth="1" />
+                {(() => {
+                  const mapped = hm.ceilingProfile.map(pt => ({
+                    px: rMapU(pt.u),
+                    py: rMapV(pt.v),
+                  }));
+                  mapped.sort((a, b) => a.px - b.px);
+                  const leftPt = mapped[0];
+                  const rightPt = mapped[mapped.length - 1];
+                  return (
+                    <>
+                      <line x1={leftPt.px} y1={dy + dh} x2={leftPt.px} y2={leftPt.py} stroke="#666" strokeWidth="1" />
+                      <line x1={rightPt.px} y1={dy + dh} x2={rightPt.px} y2={rightPt.py} stroke="#666" strokeWidth="1" />
+                      <polyline
+                        points={mapped.map(p => `${p.px},${p.py}`).join(' ')}
+                        fill="none" stroke="#666" strokeWidth="1"
+                      />
+                    </>
+                  );
+                })()}
+              </g>
+            ) : (
+              <rect x={dx} y={dy} width={dw} height={dh} fill="none" stroke="#666" strokeWidth="1" />
+            )}
 
             {hm.reflectionPoints.map((rp, ri) => {
-              const px = dx + ((rp.u - hm.uRange[0]) / uLen) * dw;
-              const py = dy + (1 - (rp.v - hm.vRange[0]) / vLen) * dh;
+              const px = rMapU(rp.u);
+              const py = rMapV(rp.v);
               return (
                 <g key={ri}>
                   <circle cx={px} cy={py} r="4" fill="none" stroke="#000" strokeWidth="1.5" />
@@ -574,8 +877,8 @@ function HeatmapSVG({ room, matchedPeaks, speedOfSound, peakMatchTolerance }: {
             })}
 
             {hm.hotspots.map((hs, hi) => {
-              const px = dx + ((hs.u - hm.uRange[0]) / uLen) * dw;
-              const py = dy + (1 - (hs.v - hm.vRange[0]) / vLen) * dh;
+              const px = rMapU(hs.u);
+              const py = rMapV(hs.v);
               return (
                 <g key={`hs-${hi}`}>
                   <circle cx={px} cy={py} r="8" fill="none" stroke="#ff0000" strokeWidth="2" strokeDasharray="3 2" />
@@ -587,10 +890,10 @@ function HeatmapSVG({ room, matchedPeaks, speedOfSound, peakMatchTolerance }: {
             })}
 
             <text x={dx + dw / 2} y={dy + dh + 12} textAnchor="middle" fill="#999" fontSize="7">
-              {RPT_AXIS_LABELS[hm.uAxis]} ({uLen.toFixed(1)}m)
+              {hm.hLabel} ({uLen.toFixed(1)}m)
             </text>
             <text transform={`translate(${dx - 10}, ${dy + dh / 2}) rotate(-90)`} textAnchor="middle" fill="#999" fontSize="7">
-              {RPT_AXIS_LABELS[hm.vAxis]} ({vLen.toFixed(1)}m)
+              {hm.vLabel} ({vLen.toFixed(1)}m)
             </text>
           </g>
         );
@@ -608,7 +911,7 @@ function HeatmapSVG({ room, matchedPeaks, speedOfSound, peakMatchTolerance }: {
               const v = 1 - i / (steps - 1);
               return (
                 <rect key={`cb-${i}`} x={barX} y={barY + i * stepH} width={14} height={stepH + 0.5}
-                  fill={reportHeatColor(v)} />
+                  fill={colorFn(v)} />
               );
             })}
             <rect x={barX} y={barY} width={14} height={barH} fill="none" stroke="#999" strokeWidth="0.5" />
@@ -625,6 +928,383 @@ function HeatmapSVG({ room, matchedPeaks, speedOfSound, peakMatchTolerance }: {
   );
 }
 
+function reportPressureColor(dB: number, minDB: number, maxDB: number): string {
+  if (dB <= -998) return '#e5e5e5';
+  const range = maxDB - minDB || 1;
+  const t = Math.max(0, Math.min(1, (dB - minDB) / range));
+  let r: number, g: number, b: number;
+  if (t < 0.5) {
+    const s = t / 0.5;
+    r = 0;
+    g = Math.round(255 * s);
+    b = Math.round(255 * (1 - s));
+  } else {
+    const s = (t - 0.5) / 0.5;
+    r = Math.round(255 * s);
+    g = Math.round(255 * (1 - s));
+    b = 0;
+  }
+  return `rgb(${r},${g},${b})`;
+}
+
+function ReportPressureMapSVG({ data, title, bestSeat, seatCandidates, speakers, micPos, mic2Position }: {
+  data: PressureMapData;
+  title: string;
+  bestSeat?: import("@shared/schema").SeatCandidate;
+  seatCandidates?: import("@shared/schema").SeatCandidate[];
+  speakers?: import("@shared/schema").SpeakerConfig[];
+  micPos?: Point3D;
+  mic2Position?: Point3D | null;
+}) {
+  const padL = 36;
+  const padR = 28;
+  const padT = 18;
+  const padB = 22;
+  const uLen = data.uRange[1] - data.uRange[0];
+  const vLen = data.vRange[1] - data.vRange[0];
+  const isTop = title.includes('Top');
+  const isSide = title.includes('Side');
+
+  const baseW = 320;
+  const drawW = baseW;
+  const drawH = Math.round(baseW * (isTop ? uLen / vLen : vLen / uLen));
+
+  const svgWidth = padL + drawW + padR;
+  const svgHeight = padT + drawH + padB;
+
+  const toScreenX = isTop
+    ? (y: number) => padL + (1 - (y - data.vRange[0]) / vLen) * drawW
+    : (x: number) => padL + ((x - data.uRange[0]) / uLen) * drawW;
+  const toScreenY = isTop
+    ? (x: number) => padT + ((x - data.uRange[0]) / uLen) * drawH
+    : (z: number) => padT + (1 - (z - data.vRange[0]) / vLen) * drawH;
+
+  const cellWTop = drawW / data.gridHeight;
+  const cellHTop = drawH / data.gridWidth;
+  const cellWSide = drawW / data.gridWidth;
+  const cellHSide = drawH / data.gridHeight;
+
+  const renderStar = (cx: number, cy: number) => {
+    const starR = 7;
+    const points = Array.from({ length: 10 }, (_, i) => {
+      const angle = -Math.PI / 2 + (i * Math.PI / 5);
+      const r = i % 2 === 0 ? starR : starR * 0.4;
+      return `${cx + r * Math.cos(angle)},${cy + r * Math.sin(angle)}`;
+    }).join(' ');
+    return <polygon points={points} fill="#ffd700" stroke="#b8860b" strokeWidth="1" />;
+  };
+
+  return (
+    <svg width={svgWidth} height={svgHeight} style={{ border: '1px solid #ddd' }}>
+      <text x={padL + drawW / 2} y={12} textAnchor="middle" fontSize="9" fontWeight="bold" fill="#333">{title}</text>
+      {data.grid.map((row, j) =>
+        row.map((cell, i) => {
+          const rx = isTop ? padL + (data.gridHeight - 1 - j) * cellWTop : padL + i * cellWSide;
+          const ry = isTop ? padT + i * cellHTop : padT + (data.gridHeight - 1 - j) * cellHSide;
+          const rw = isTop ? cellWTop + 0.5 : cellWSide + 0.5;
+          const rh = isTop ? cellHTop + 0.5 : cellHSide + 0.5;
+          return (
+            <rect key={`${j}-${i}`}
+              x={rx} y={ry} width={rw} height={rh}
+              fill={reportPressureColor(cell, data.minVal, data.maxVal)}
+            />
+          );
+        })
+      )}
+      <rect x={padL} y={padT} width={drawW} height={drawH} fill="none" stroke="#999" strokeWidth="0.5" />
+
+      {speakers && isTop && speakers.map((spk, si) => (
+        <g key={spk.id}>
+          <circle cx={toScreenX(spk.position.y)} cy={toScreenY(spk.position.x)} r="4" fill="#e74c3c" stroke="#fff" strokeWidth="0.5" />
+          <text x={toScreenX(spk.position.y) + 6} y={toScreenY(spk.position.x) + 3} fontSize="6" fill="#e74c3c" fontWeight="bold">
+            {speakers.length > 1 ? `S${si + 1}` : 'S'}
+          </text>
+        </g>
+      ))}
+      {speakers && isSide && speakers.map((spk, si) => (
+        <g key={spk.id}>
+          <circle cx={toScreenX(spk.position.x)} cy={toScreenY(spk.position.z)} r="4" fill="#e74c3c" stroke="#fff" strokeWidth="0.5" />
+          <text x={toScreenX(spk.position.x) + 6} y={toScreenY(spk.position.z) + 3} fontSize="6" fill="#e74c3c" fontWeight="bold">
+            {speakers.length > 1 ? `S${si + 1}` : 'S'}
+          </text>
+        </g>
+      ))}
+      {micPos && isTop && (
+        <>
+          <circle cx={toScreenX(micPos.y)} cy={toScreenY(micPos.x)} r="3" fill="#3498db" stroke="#fff" strokeWidth="0.5" />
+          <text x={toScreenX(micPos.y) + 5} y={toScreenY(micPos.x) + 3} fontSize="6" fill="#3498db" fontWeight="bold">M1</text>
+        </>
+      )}
+      {micPos && isSide && (
+        <>
+          <circle cx={toScreenX(micPos.x)} cy={toScreenY(micPos.z)} r="3" fill="#3498db" stroke="#fff" strokeWidth="0.5" />
+          <text x={toScreenX(micPos.x) + 5} y={toScreenY(micPos.z) + 3} fontSize="6" fill="#3498db" fontWeight="bold">M1</text>
+        </>
+      )}
+      {mic2Position && isTop && (
+        <>
+          <circle cx={toScreenX(mic2Position.y)} cy={toScreenY(mic2Position.x)} r="3" fill="#8e44ad" stroke="#fff" strokeWidth="0.5" />
+          <text x={toScreenX(mic2Position.y) + 5} y={toScreenY(mic2Position.x) + 3} fontSize="6" fill="#8e44ad" fontWeight="bold">M2</text>
+        </>
+      )}
+      {mic2Position && isSide && (
+        <>
+          <circle cx={toScreenX(mic2Position.x)} cy={toScreenY(mic2Position.z)} r="3" fill="#8e44ad" stroke="#fff" strokeWidth="0.5" />
+          <text x={toScreenX(mic2Position.x) + 5} y={toScreenY(mic2Position.z) + 3} fontSize="6" fill="#8e44ad" fontWeight="bold">M2</text>
+        </>
+      )}
+
+      {seatCandidates && isTop && seatCandidates.slice(0, 5).map((c, ci) => {
+        const cx = toScreenX(c.y); const cy = toScreenY(c.x);
+        return (
+          <g key={`sc-t-${ci}`}>
+            {ci === 0 ? renderStar(cx, cy) : (
+              <polygon points={Array.from({ length: 10 }, (_, i) => {
+                const angle = -Math.PI / 2 + (i * Math.PI / 5);
+                const r = i % 2 === 0 ? 5 : 2;
+                return `${cx + r * Math.cos(angle)},${cy + r * Math.sin(angle)}`;
+              }).join(' ')} fill={ci === 0 ? '#ffd700' : '#c0c0c0'} stroke="#666" strokeWidth="0.5" />
+            )}
+            <text x={cx + 7} y={cy + 3} fontSize="6" fill={ci === 0 ? '#b8860b' : '#666'} fontWeight="bold">#{ci + 1}</text>
+          </g>
+        );
+      })}
+      {seatCandidates && isSide && seatCandidates.slice(0, 5).map((c, ci) => {
+        const cx = toScreenX(c.x); const cy = toScreenY(c.z);
+        return (
+          <g key={`sc-s-${ci}`}>
+            {ci === 0 ? renderStar(cx, cy) : (
+              <polygon points={Array.from({ length: 10 }, (_, i) => {
+                const angle = -Math.PI / 2 + (i * Math.PI / 5);
+                const r = i % 2 === 0 ? 5 : 2;
+                return `${cx + r * Math.cos(angle)},${cy + r * Math.sin(angle)}`;
+              }).join(' ')} fill="#c0c0c0" stroke="#666" strokeWidth="0.5" />
+            )}
+            <text x={cx + 7} y={cy + 3} fontSize="6" fill={ci === 0 ? '#b8860b' : '#666'} fontWeight="bold">#{ci + 1}</text>
+          </g>
+        );
+      })}
+      {bestSeat && !seatCandidates && isTop && (
+        <>
+          {renderStar(toScreenX(bestSeat.y), toScreenY(bestSeat.x))}
+          <text x={toScreenX(bestSeat.y) + 9} y={toScreenY(bestSeat.x) + 3} fontSize="7" fill="#b8860b" fontWeight="bold">Opt</text>
+        </>
+      )}
+      {bestSeat && !seatCandidates && isSide && (
+        <>
+          {renderStar(toScreenX(bestSeat.x), toScreenY(bestSeat.z))}
+          <text x={toScreenX(bestSeat.x) + 9} y={toScreenY(bestSeat.z) + 3} fontSize="7" fill="#b8860b" fontWeight="bold">Opt</text>
+        </>
+      )}
+      <text x={padL + drawW / 2} y={svgHeight - 4} textAnchor="middle" fontSize="7" fill="#666">
+        {isTop ? data.vAxis : data.uAxis} ({(isTop ? vLen : uLen).toFixed(1)}m)
+      </text>
+      <text transform={`translate(8, ${padT + drawH / 2}) rotate(-90)`} textAnchor="middle" fontSize="7" fill="#666">
+        {isTop ? data.uAxis : data.vAxis}
+      </text>
+      <text x={svgWidth - 14} y={padT - 2} textAnchor="middle" fontSize="6" fill="#666">{data.maxVal.toFixed(0)}dB</text>
+      <text x={svgWidth - 14} y={padT + drawH + 8} textAnchor="middle" fontSize="6" fill="#666">{data.minVal.toFixed(0)}dB</text>
+    </svg>
+  );
+}
+
+const ModalFreqResponseSection = forwardRef<HTMLDivElement, {
+  modalResult: ModalAnalysisResult;
+  room: RoomDimensions;
+  speakers: SpeakerConfig[];
+  micPosition: Point3D;
+  ceiling?: CeilingConfig;
+}>(function ModalFreqResponseSection({ modalResult, room, speakers, micPosition, ceiling }, ref) {
+  const freqResponse = useMemo(() => {
+    const freqs: number[] = [];
+    for (let f = modalResult.fMin; f <= modalResult.fMax; f += 0.5) freqs.push(f);
+    const sourcePos = speakers[0]?.position || { x: 0.5, y: 1.5, z: 1.2 };
+    return computeDrivenResponse(modalResult.modes, room, sourcePos, micPosition, freqs, ceiling);
+  }, [modalResult, room, speakers, micPosition, ceiling]);
+
+  const modeFreqs = modalResult.modes.map(m => m.frequency);
+  const matchedFreqs = modalResult.modes.filter(m => m.matched).map(m => m.frequency);
+
+  return (
+    <div ref={ref} style={{ width: '780px', padding: '10px', background: '#fff' }}>
+      <h3 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px', color: '#333' }}>Modal Analysis — Frequency Response at Mic Position</h3>
+      <ResponsiveContainer width="100%" height={260}>
+        <LineChart data={freqResponse} margin={{ top: 5, right: 15, left: 5, bottom: 5 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
+          <XAxis dataKey="freq" type="number" domain={[modalResult.fMin, modalResult.fMax]}
+            tickFormatter={(v: number) => `${v.toFixed(0)}`} fontSize={9} label={{ value: 'Frequency (Hz)', position: 'insideBottom', offset: -2, fontSize: 9 }} />
+          <YAxis fontSize={9} label={{ value: 'dB', angle: -90, position: 'insideLeft', fontSize: 9 }} />
+          <Line type="monotone" dataKey="dB" stroke="#2563eb" dot={false} strokeWidth={1.5} />
+          {modeFreqs.map((f, i) => (
+            <ReferenceLine key={`mode-${i}`} x={f} stroke={matchedFreqs.includes(f) ? '#16a34a' : '#d1d5db'} strokeDasharray="2 2" strokeWidth={0.5} />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+      <div style={{ fontSize: '8px', color: '#888', textAlign: 'center', marginTop: '2px' }}>
+        Green dashes = matched modes, Gray dashes = predicted (unmatched) modes
+      </div>
+    </div>
+  );
+});
+
+const ModalCriticalMapsSection = forwardRef<HTMLDivElement, {
+  modalResult: ModalAnalysisResult;
+  room: RoomDimensions;
+  speakers: SpeakerConfig[];
+  micPosition: Point3D;
+  mic2Position?: Point3D | null;
+  ceiling?: CeilingConfig;
+}>(function ModalCriticalMapsSection({ modalResult, room, speakers, micPosition, mic2Position, ceiling }, ref) {
+  const criticalModes = useMemo(() => {
+    const matched = modalResult.modes.filter(m => m.matched);
+    if (matched.length === 0) return [];
+    const sorted = [...matched].sort((a, b) => b.amplitude - a.amplitude);
+    return sorted.slice(0, 5);
+  }, [modalResult.modes]);
+
+  const criticalMaps = useMemo(() => {
+    if (criticalModes.length === 0) return [];
+    const sourcePos = speakers[0]?.position || { x: 0.5, y: 1.5, z: 1.2 };
+    return criticalModes.map(mode => ({
+      freq: mode.frequency,
+      label: `(${mode.n},${mode.m},${mode.l}) @ ${mode.frequency.toFixed(1)} Hz`,
+      top: computePressureMap(modalResult.modes, room, sourcePos, mode.frequency, 'top', micPosition.z, 30, ceiling),
+      side: computePressureMap(modalResult.modes, room, sourcePos, mode.frequency, 'side', room.width / 2, 30, ceiling),
+    }));
+  }, [criticalModes, modalResult.modes, room, speakers, micPosition, ceiling]);
+
+  if (criticalMaps.length === 0) return null;
+
+  return (
+    <div ref={ref} style={{ width: '780px', padding: '10px', background: '#fff' }}>
+      <h3 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px', color: '#333' }}>Modal Analysis — Critical Mode Pressure Maps</h3>
+      <div style={{ fontSize: '10px', color: '#666', marginBottom: '8px' }}>
+        Pressure distribution at the {criticalMaps.length} strongest matched room modes
+      </div>
+      {criticalMaps.map((cm, ci) => (
+        <div key={ci} style={{ marginBottom: '12px' }}>
+          <div style={{ fontSize: '10px', fontWeight: 'bold', marginBottom: '4px', color: '#333' }}>
+            Mode {cm.label}
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <ReportPressureMapSVG data={cm.top} title={`Top View — ${cm.freq.toFixed(0)} Hz`}
+              speakers={speakers} micPos={micPosition} mic2Position={mic2Position} />
+            <ReportPressureMapSVG data={cm.side} title={`Side View — ${cm.freq.toFixed(0)} Hz`}
+              speakers={speakers} micPos={micPosition} mic2Position={mic2Position} />
+          </div>
+        </div>
+      ))}
+      <div style={{ fontSize: '8px', color: '#888', textAlign: 'center', marginTop: '4px' }}>
+        Blue = cancellation (null), Green = neutral, Red = resonance (high pressure)
+      </div>
+    </div>
+  );
+});
+
+const ModalSeatSection = forwardRef<HTMLDivElement, {
+  modalResult: ModalAnalysisResult;
+  room: RoomDimensions;
+  speakers: SpeakerConfig[];
+  micPosition: Point3D;
+  mic2Position?: Point3D | null;
+  ceiling?: CeilingConfig;
+}>(function ModalSeatSection({ modalResult, room, speakers, micPosition, mic2Position, ceiling }, ref) {
+  const seatResponseComparison = useMemo(() => {
+    if (!modalResult.bestSeat) return null;
+    const freqs: number[] = [];
+    for (let f = modalResult.fMin; f <= modalResult.fMax; f += 0.5) freqs.push(f);
+    const sourcePos = speakers[0]?.position || { x: 0.5, y: 1.5, z: 1.2 };
+
+    const micResponse = computeDrivenResponse(modalResult.modes, room, sourcePos, micPosition, freqs, ceiling);
+    const optResponse = computeDrivenResponse(
+      modalResult.modes, room, sourcePos,
+      { x: modalResult.bestSeat.x, y: modalResult.bestSeat.y, z: modalResult.bestSeat.z },
+      freqs, ceiling
+    );
+
+    const mic2Response = mic2Position ? computeDrivenResponse(modalResult.modes, room, sourcePos, mic2Position, freqs, ceiling) : null;
+
+    return freqs.map((f, i) => ({
+      freq: f,
+      mic: micResponse[i].dB,
+      optimal: optResponse[i].dB,
+      ...(mic2Response ? { mic2: mic2Response[i].dB } : {}),
+    }));
+  }, [modalResult, room, speakers, micPosition, mic2Position, ceiling]);
+
+  if (!modalResult.bestSeat) return null;
+
+  return (
+    <div ref={ref} style={{ width: '780px', padding: '10px', background: '#fff' }}>
+      <h3 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px', color: '#333' }}>Modal Analysis — Seat Optimizer</h3>
+
+      <div style={{ fontSize: '11px', fontWeight: 'bold', marginBottom: '4px' }}>Top 5 Seat Candidates</div>
+      <table style={{ width: 'auto', borderCollapse: 'collapse', fontSize: '9px', marginBottom: '12px' }}>
+        <thead>
+          <tr>
+            <th style={thStyle}>Rank</th>
+            <th style={thStyle}>X (m)</th>
+            <th style={thStyle}>Y (m)</th>
+            <th style={thStyle}>Z (m)</th>
+            <th style={thStyle}>Score</th>
+            <th style={thStyle}>Jvar</th>
+            <th style={thStyle}>Jnull</th>
+            <th style={thStyle}>Jpeak</th>
+            <th style={thStyle}>Jsym</th>
+          </tr>
+        </thead>
+        <tbody>
+          {modalResult.seatCandidates.slice(0, 5).map((c, i) => (
+            <tr key={i} style={{ background: i === 0 ? '#fefce8' : undefined }}>
+              <td style={tdStyle}>#{i + 1}</td>
+              <td style={tdStyle}>{c.x.toFixed(2)}</td>
+              <td style={tdStyle}>{c.y.toFixed(2)}</td>
+              <td style={tdStyle}>{c.z.toFixed(2)}</td>
+              <td style={tdStyle}>{c.score.toFixed(2)}</td>
+              <td style={tdStyle}>{c.Jvar.toFixed(2)}</td>
+              <td style={tdStyle}>{c.Jnull.toFixed(2)}</td>
+              <td style={tdStyle}>{c.Jpeak.toFixed(2)}</td>
+              <td style={tdStyle}>{(c.Jsymmetry ?? 0).toFixed(2)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <div style={{ fontSize: '11px', fontWeight: 'bold', marginBottom: '4px' }}>Optimal Position</div>
+      <div style={{ display: 'flex', gap: '16px', fontSize: '10px', marginBottom: '8px' }}>
+        <div><strong>X (Depth):</strong> {modalResult.bestSeat.x.toFixed(2)} m</div>
+        <div><strong>Y (Width):</strong> {modalResult.bestSeat.y.toFixed(2)} m</div>
+        <div><strong>Z (Height):</strong> {modalResult.bestSeat.z.toFixed(2)} m</div>
+        <div><strong>Score:</strong> {modalResult.bestSeat.score.toFixed(2)}</div>
+      </div>
+
+      {seatResponseComparison && (
+        <>
+          <div style={{ fontSize: '11px', fontWeight: 'bold', marginBottom: '4px' }}>Frequency Response Comparison</div>
+          <ResponsiveContainer width="100%" height={220}>
+            <LineChart data={seatResponseComparison} margin={{ top: 5, right: 15, left: 5, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
+              <XAxis dataKey="freq" type="number" domain={[modalResult.fMin, modalResult.fMax]}
+                tickFormatter={(v: number) => `${v.toFixed(0)}`} fontSize={9}
+                label={{ value: 'Frequency (Hz)', position: 'insideBottom', offset: -2, fontSize: 9 }} />
+              <YAxis fontSize={9} label={{ value: 'dB', angle: -90, position: 'insideLeft', fontSize: 9 }} />
+              <Line type="monotone" dataKey="mic" stroke="#3498db" dot={false} strokeWidth={1.5} name="Mic Position" />
+              <Line type="monotone" dataKey="optimal" stroke="#f59e0b" dot={false} strokeWidth={1.5} name="Optimal Seat" />
+              {seatResponseComparison[0] && 'mic2' in seatResponseComparison[0] && (
+                <Line type="monotone" dataKey="mic2" stroke="#8e44ad" dot={false} strokeWidth={1.5} name="Mic 2" />
+              )}
+              <Legend wrapperStyle={{ fontSize: '8px' }} />
+            </LineChart>
+          </ResponsiveContainer>
+          <div style={{ fontSize: '8px', color: '#888', textAlign: 'center', marginTop: '2px' }}>
+            Blue = current mic position, Orange = optimal seat position{mic2Position ? ', Purple = Mic 2' : ''}
+          </div>
+        </>
+      )}
+    </div>
+  );
+});
+
 export const ReportCapture = forwardRef<ReportCaptureHandle, ReportCaptureProps>(function ReportCapture(props, ref) {
   const etcRef = useRef<HTMLDivElement>(null);
   const roomTopRef = useRef<HTMLDivElement>(null);
@@ -638,6 +1318,13 @@ export const ReportCapture = forwardRef<ReportCaptureHandle, ReportCaptureProps>
   const clarityRef = useRef<HTMLDivElement>(null);
   const unassignedRef = useRef<HTMLDivElement>(null);
   const heatmapRef = useRef<HTMLDivElement>(null);
+  const criticalZoneRef = useRef<HTMLDivElement>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
+  const modalFreqResponseRef = useRef<HTMLDivElement>(null);
+  const modalMapsRef = useRef<HTMLDivElement>(null);
+  const modalCriticalMapsRef = useRef<HTMLDivElement>(null);
+  const modalGlobalRef = useRef<HTMLDivElement>(null);
+  const modalSeatRef = useRef<HTMLDivElement>(null);
 
   useImperativeHandle(ref, () => ({
     getEtcElement: () => etcRef.current,
@@ -652,6 +1339,13 @@ export const ReportCapture = forwardRef<ReportCaptureHandle, ReportCaptureProps>
     getClarityElement: () => clarityRef.current,
     getUnassignedElement: () => unassignedRef.current,
     getHeatmapElement: () => heatmapRef.current,
+    getCriticalZoneElement: () => criticalZoneRef.current,
+    getModalElement: () => modalRef.current,
+    getModalFreqResponseElement: () => modalFreqResponseRef.current,
+    getModalMapsElement: () => modalMapsRef.current,
+    getModalCriticalMapsElement: () => modalCriticalMapsRef.current,
+    getModalGlobalElement: () => modalGlobalRef.current,
+    getModalSeatElement: () => modalSeatRef.current,
   }));
 
   const fusionETCs = useMemo(() => {
@@ -868,12 +1562,13 @@ export const ReportCapture = forwardRef<ReportCaptureHandle, ReportCaptureProps>
 
   const unassignedDiags = useMemo(() => {
     if (props.mode !== 'geometry' || !props.irData || props.speakers.length === 0) return [];
+    const canonicalPeaks = scorecardPeaks;
     return analyzeUnassignedPeaks(
-      props.matchedPeaks, props.room, props.speakers[0].position, props.micPosition,
+      canonicalPeaks, props.room, props.speakers[0].position, props.micPosition,
       props.speedOfSound, props.surfaceWeights || {}, props.surfaceMaterials || {},
-      props.peakMatchTolerance
+      props.peakMatchTolerance, props.ceiling, props.roomObjects
     );
-  }, [props.matchedPeaks, props.room, props.speakers, props.micPosition, props.speedOfSound, props.surfaceWeights, props.surfaceMaterials, props.mode, props.irData, props.peakMatchTolerance]);
+  }, [scorecardPeaks, props.room, props.speakers, props.micPosition, props.speedOfSound, props.surfaceWeights, props.surfaceMaterials, props.mode, props.irData, props.peakMatchTolerance, props.ceiling, props.roomObjects]);
 
   return (
     <div style={{
@@ -933,21 +1628,24 @@ export const ReportCapture = forwardRef<ReportCaptureHandle, ReportCaptureProps>
             <h3 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px', color: '#333' }}>Room View — Top (XY)</h3>
             <RoomSVG room={props.room} speakers={props.speakers} micPosition={props.micPosition}
               mic2Position={props.mic2Position} matchedPeaks={props.matchedPeaks}
-              fusionOverlayPeaks={props.fusionOverlayPeaks} viewMode="top" />
+              fusionOverlayPeaks={props.fusionOverlayPeaks} viewMode="top"
+              ceiling={props.ceiling} roomObjects={props.roomObjects} />
           </div>
 
           <div ref={roomSideRef} style={{ width: '620px', padding: '10px', background: '#fff' }}>
             <h3 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px', color: '#333' }}>Room View — Side (XZ)</h3>
             <RoomSVG room={props.room} speakers={props.speakers} micPosition={props.micPosition}
               mic2Position={props.mic2Position} matchedPeaks={props.matchedPeaks}
-              fusionOverlayPeaks={props.fusionOverlayPeaks} viewMode="side" />
+              fusionOverlayPeaks={props.fusionOverlayPeaks} viewMode="side"
+              ceiling={props.ceiling} roomObjects={props.roomObjects} />
           </div>
 
           <div ref={roomSurfaceRef} style={{ width: '780px', padding: '10px', background: '#fff' }}>
             <h3 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px', color: '#333' }}>Room View — Surfaces (Inside View)</h3>
             <RoomSurfaceSVG room={props.room} matchedPeaks={props.matchedPeaks}
               fusionOverlayPeaks={props.fusionOverlayPeaks}
-              peakMatchTolerance={props.peakMatchTolerance} speedOfSound={props.speedOfSound} />
+              peakMatchTolerance={props.peakMatchTolerance} speedOfSound={props.speedOfSound}
+              ceiling={props.ceiling} />
           </div>
         </>
       )}
@@ -972,6 +1670,7 @@ export const ReportCapture = forwardRef<ReportCaptureHandle, ReportCaptureProps>
                   <th style={thStyle}>P*</th>
                   <th style={thStyle}>|S-P*|</th>
                   <th style={thStyle}>|P*-M|</th>
+                  <th style={thStyle}>L_pred</th>
                 </>
               )}
             </tr>
@@ -1007,6 +1706,7 @@ export const ReportCapture = forwardRef<ReportCaptureHandle, ReportCaptureProps>
                       <td style={tdStyle}>{mp.assigned ? `(${mp.reflection!.reflectionPoint.x.toFixed(2)}, ${mp.reflection!.reflectionPoint.y.toFixed(2)}, ${mp.reflection!.reflectionPoint.z.toFixed(2)})` : '-'}</td>
                       <td style={tdStyle}>{mp.assigned ? mp.reflection!.speakerDistance.toFixed(3) : '-'}</td>
                       <td style={tdStyle}>{mp.assigned ? mp.reflection!.micDistance.toFixed(3) : '-'}</td>
+                      <td style={tdStyle}>{mp.assigned ? (mp.reflection!.speakerDistance + mp.reflection!.micDistance).toFixed(3) : '-'}</td>
                     </>
                   )}
                 </tr>
@@ -1069,7 +1769,7 @@ export const ReportCapture = forwardRef<ReportCaptureHandle, ReportCaptureProps>
               )}
             </div>
             <div style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '12px' }}>
-              <div style={{ fontSize: '10px', color: '#6b7280', fontWeight: 500, marginBottom: '6px' }}>RFZ Check (0-20 ms &lt; -20 dB)</div>
+              <div style={{ fontSize: '10px', color: '#6b7280', fontWeight: 500, marginBottom: '6px' }}>RFZ (0-20 ms): PASS &lt; -20 dB, WARN -20 to -10 dB, FAIL ≥ -10 dB</div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <span style={{ fontSize: '10px', fontWeight: 'bold',
                   width: '48px', height: '22px', borderRadius: '9999px', color: '#fff',
@@ -1087,7 +1787,7 @@ export const ReportCapture = forwardRef<ReportCaptureHandle, ReportCaptureProps>
               )}
             </div>
             <div style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '12px' }}>
-              <div style={{ fontSize: '10px', color: '#6b7280', fontWeight: 500, marginBottom: '6px' }}>Critical Early (0-10 ms &lt; -15 dB)</div>
+              <div style={{ fontSize: '10px', color: '#6b7280', fontWeight: 500, marginBottom: '6px' }}>Critical Early (0-10 ms): PASS &lt; -15 dB, WARN -15 to -10 dB, FAIL ≥ -10 dB</div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <span style={{ fontSize: '10px', fontWeight: 'bold',
                   width: '48px', height: '22px', borderRadius: '9999px', color: '#fff',
@@ -1139,6 +1839,9 @@ export const ReportCapture = forwardRef<ReportCaptureHandle, ReportCaptureProps>
                 </div>
               )}
             </div>
+          </div>
+          <div style={{ fontSize: '9px', color: '#9ca3af', marginTop: '6px', fontStyle: 'italic' }}>
+            Scorecard computed from {scorecardPeaks.length} detected peaks{reportHasFusion ? ' (merged from all analyzed IRs)' : ''}.
           </div>
         </div>
       )}
@@ -1412,9 +2115,124 @@ export const ReportCapture = forwardRef<ReportCaptureHandle, ReportCaptureProps>
       {props.mode === 'geometry' && (
         <div ref={heatmapRef} style={{ width: '780px', padding: '10px', background: '#fff' }}>
           <h3 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px', color: '#333' }}>Treatment Target Heatmaps</h3>
-          <HeatmapSVG room={props.room} matchedPeaks={combinedHeatmapPeaks}
-            speedOfSound={props.speedOfSound} peakMatchTolerance={props.peakMatchTolerance} />
+          <ReportHeatmapGrid room={props.room} matchedPeaks={combinedHeatmapPeaks}
+            speedOfSound={props.speedOfSound} peakMatchTolerance={props.peakMatchTolerance}
+            ceiling={props.ceiling} colorFn={reportHeatColor} idPrefix="rpt" />
         </div>
+      )}
+
+      {props.mode === 'geometry' && (
+        <div ref={criticalZoneRef} style={{ width: '780px', padding: '10px', background: '#fff' }}>
+          <h3 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px', color: '#333' }}>Critical Zones</h3>
+          <p style={{ fontSize: '9px', color: '#666', marginBottom: '6px' }}>Red = most critical (highest reflection energy), Yellow = moderate, Green = low priority</p>
+          <ReportHeatmapGrid room={props.room} matchedPeaks={combinedHeatmapPeaks}
+            speedOfSound={props.speedOfSound} peakMatchTolerance={props.peakMatchTolerance}
+            ceiling={props.ceiling} colorFn={reportCriticalZoneColor} idPrefix="cz" />
+        </div>
+      )}
+
+      {props.mode === 'geometry' && props.modalResult && (
+        <>
+          <div ref={modalRef} style={{ width: '780px', padding: '10px', background: '#fff' }}>
+            <h3 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px', color: '#333' }}>Modal Analysis — Room Modes</h3>
+            <div style={{ display: 'flex', gap: '16px', marginBottom: '8px', fontSize: '11px' }}>
+              <div><strong>Predicted modes:</strong> {props.modalResult.modes.length}</div>
+              <div><strong>IR peaks matched:</strong> {props.modalResult.modes.filter(m => m.matched).length} / {props.modalResult.measuredPeaks.length}</div>
+              <div><strong>Schroeder freq:</strong> {props.modalResult.schroederFreq.toFixed(0)} Hz</div>
+              <div><strong>Range:</strong> {props.modalResult.fMin}–{props.modalResult.fMax} Hz</div>
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '12px' }}>
+              <thead>
+                <tr>
+                  <th style={thStyle}>(n,m,l)</th>
+                  <th style={thStyle}>Freq (Hz)</th>
+                  <th style={thStyle}>Type</th>
+                  <th style={thStyle}>IR Peak (Hz)</th>
+                  <th style={thStyle}>Q</th>
+                  <th style={thStyle}>T60 (s)</th>
+                  <th style={thStyle}>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {props.modalResult.modes.map((mode, i) => (
+                  <tr key={i}>
+                    <td style={tdStyle}>({mode.n},{mode.m},{mode.l})</td>
+                    <td style={tdStyle}>{mode.frequency.toFixed(1)}</td>
+                    <td style={tdStyle}>{mode.type}</td>
+                    <td style={tdStyle}>{mode.measuredFreq ? mode.measuredFreq.toFixed(1) : '-'}</td>
+                    <td style={tdStyle}>{mode.Q.toFixed(1)}</td>
+                    <td style={tdStyle}>{mode.T60.toFixed(2)}</td>
+                    <td style={{ ...tdStyle, color: mode.matched ? '#16a34a' : '#9ca3af' }}>
+                      {mode.matched ? 'Matched' : 'Predicted'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <ModalFreqResponseSection
+            ref={modalFreqResponseRef}
+            modalResult={props.modalResult}
+            room={props.room}
+            speakers={props.speakers}
+            micPosition={props.micPosition}
+            ceiling={props.ceiling}
+          />
+
+          {props.modalResult.pressureMapTop && props.modalResult.pressureMapSide && (
+            <div ref={modalMapsRef} style={{ width: '780px', padding: '10px', background: '#fff' }}>
+              <h3 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px', color: '#333' }}>Modal Analysis — Pressure Maps (Selected Mode)</h3>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <ReportPressureMapSVG data={props.modalResult.pressureMapTop} title="Top View (ear height)"
+                  speakers={props.speakers} micPos={props.micPosition} mic2Position={props.mic2Position} />
+                <ReportPressureMapSVG data={props.modalResult.pressureMapSide} title="Side View (centerline)"
+                  speakers={props.speakers} micPos={props.micPosition} mic2Position={props.mic2Position} />
+              </div>
+              <div style={{ fontSize: '8px', color: '#888', textAlign: 'center', marginTop: '4px' }}>
+                Blue = cancellation (null), Green = neutral, Red = resonance (high pressure)
+              </div>
+            </div>
+          )}
+
+          <ModalCriticalMapsSection
+            ref={modalCriticalMapsRef}
+            modalResult={props.modalResult}
+            room={props.room}
+            speakers={props.speakers}
+            micPosition={props.micPosition}
+            mic2Position={props.mic2Position}
+            ceiling={props.ceiling}
+          />
+
+          {props.modalResult.globalPressureMapTop && props.modalResult.globalPressureMapSide && (
+            <div ref={modalGlobalRef} style={{ width: '780px', padding: '10px', background: '#fff' }}>
+              <h3 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px', color: '#333' }}>Modal Analysis — Global Pressure Map</h3>
+              <div style={{ fontSize: '11px', marginBottom: '4px' }}>All modes, {props.modalResult.fMin}–{props.modalResult.fMax} Hz</div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <ReportPressureMapSVG data={props.modalResult.globalPressureMapTop} title="Global Top View (ear height)"
+                  seatCandidates={props.modalResult.seatCandidates.slice(0, 5)}
+                  speakers={props.speakers} micPos={props.micPosition} mic2Position={props.mic2Position} />
+                <ReportPressureMapSVG data={props.modalResult.globalPressureMapSide} title="Global Side View (centerline)"
+                  seatCandidates={props.modalResult.seatCandidates.slice(0, 5)}
+                  speakers={props.speakers} micPos={props.micPosition} mic2Position={props.mic2Position} />
+              </div>
+              <div style={{ fontSize: '8px', color: '#888', textAlign: 'center', marginTop: '4px' }}>
+                Broadband average of all modes. Blue = cancellation, Green = neutral, Red = resonance. Stars = top 5 seat candidates.
+              </div>
+            </div>
+          )}
+
+          <ModalSeatSection
+            ref={modalSeatRef}
+            modalResult={props.modalResult}
+            room={props.room}
+            speakers={props.speakers}
+            micPosition={props.micPosition}
+            mic2Position={props.mic2Position}
+            ceiling={props.ceiling}
+          />
+        </>
       )}
     </div>
   );
