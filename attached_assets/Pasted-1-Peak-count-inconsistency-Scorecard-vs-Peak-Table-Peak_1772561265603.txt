@@ -1,0 +1,104 @@
+1) Peak-count inconsistency (Scorecard vs Peak Table)
+	•	Peak Table says 40 peaks detected (“40 peaks detected (merged from all IRs…)”).  ￼
+	•	Scorecard footer says 30 detected peaks, but its own bin counts are 9 + 8 + 23 = 40, which matches the Peak Table.  ￼
+
+✅ Fix: make the Scorecard footer use the same N_peaks value actually used in the bins (likely 40), or explicitly state why it’s 30 (e.g., “only assigned peaks,” or “only 0–20 ms peaks,” etc.).
+
+⸻
+
+2) “Unassigned Peaks Analysis” is not using the same peak dataset as the Peak Table
+
+Example:
+	•	Unassigned page shows Peak @ 19.50 ms, -25.0 dB, severity -32.9  ￼
+	•	But in the Peak Table, the closest is 19.79 ms, -22.5 dB, severity -30.5 (row 17).  ￼
+
+That’s not rounding — it’s a different peak record.
+
+✅ Fix: ensure “Unassigned Peaks Analysis” is generated from the same canonical peak list used for:
+	•	Peak Analysis Results table
+	•	Scorecard
+	•	Heatmaps
+	•	Results-by-surface
+
+(Usually: one PEAKS_FINAL array reused everywhere.)
+
+⸻
+
+3) Peak table mixes “measured-delay” lengths with “predicted-geometry” distances (internal mismatch)
+
+In the Peak Table you report:
+	•	Delay (ms), dL (m), L_refl (m) (these appear consistent with measured delay: dL ≈ c*delay, and L_refl = L_direct + dL)  ￼
+	•	but you also report P*, |S-P*|, |P*-M| which are distances derived from the predicted specular point (geometry).  ￼
+
+These two can disagree (and they do). That creates confusion because a user expects:
+L_{refl} \approx |S-P^*| + |P^*-M|
+…but it won’t match if L_refl is computed from measured delay while P* is computed from predicted specular geometry.
+
+✅ Fix (best practice): show both sets explicitly:
+	•	L_refl_meas = L_direct + c*Delay_meas
+	•	L_refl_pred = |S-P*| + |P*-M|
+	•	dL_meas = c*Delay_meas
+	•	dL_pred = c*PredDelay
+
+Then the “Err (ms)” naturally ties to Delay_meas - PredDelay.
+
+⸻
+
+4) Schroeder frequency looks wrong for the reported room + RT
+
+You report Schroeder Freq ≈ 291–297 Hz.  ￼
+But from the report:
+	•	Room volume V = 4.146 \cdot 2.55 \cdot 2.7 \approx 28.5\ \mathrm{m^3}  ￼
+	•	RT60 ≈ 0.176 s (fused average)  ￼
+
+Using the common estimate:
+f_s \approx 2000\sqrt{\frac{RT60}{V}}
+gives roughly 157 Hz, not ~291 Hz.
+
+✅ Fix: re-check:
+	•	constant used (2000 vs 4000),
+	•	volume units (m³ vs something else),
+	•	whether you accidentally used area or one dimension instead of volume,
+	•	whether you used EDT/T30 differently (still wouldn’t double it this much).
+
+⸻
+
+5) Ceiling shape is clearly modeled in plots, but not declared in “Input Configuration”
+
+Your Side (XZ) view shows a sloped ceiling, and the modal pressure map side view also uses a sloped boundary.  ￼
+But the Input Configuration only reports a simple Room (L×W×H) with a single height value.  ￼
+
+✅ Fix: if you support non-flat ceilings, the report must list the ceiling model parameters, e.g.:
+	•	slope axis (X or Y),
+	•	start/end height (H_front/H_rear),
+	•	ridge height/position (gable),
+	•	any piecewise breakpoints.
+
+Otherwise the report is not reproducible.
+
+⸻
+
+6) Objects used in reflection assignment appear (Desk), but aren’t in the declared model
+
+Peak table includes “Desk 1 (top) -> Right Wall”.  ￼
+But Input Configuration lists only room surfaces/materials; no desk geometry is declared.  ￼
+
+✅ Fix: if “Desk 1” is part of the geometry model:
+	•	list it in Input Configuration (dimensions + pose),
+	•	include it in surface/material list (even as “generic hard surface”).
+
+If it’s not truly modeled, then that label is misleading and should be “Unassigned (likely desk/console)”.
+
+⸻
+
+7) Quality Gate thresholds vs PASS/WARN/FAIL logic looks inconsistent
+
+Scorecard titles specify:
+	•	RFZ Check (0–20 ms < -20 dB) → worst is -14.7 dB, which violates the criterion, yet it shows WARN (not FAIL).  ￼
+	•	Critical Early (0–10 ms < -15 dB) → worst is -14.7 dB, again violates, but shows WARN.  ￼
+
+✅ Fix: either:
+	•	make the label match your real policy (e.g., “WARN if any > -20 dB, FAIL if > -15 dB”), or
+	•	make the status strictly follow the printed criterion.
+
+Right now the printed rule and the displayed status disagree.

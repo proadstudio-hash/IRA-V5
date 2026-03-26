@@ -1,0 +1,2449 @@
+estimate modal frequencies and damping (Q / decay) from the IR,
+
+compute the room eigenmodes (analytic for a cuboid, numerical for shaped ceilings),
+
+render pressure maps (top/side slices), and
+
+search an optimal listening position that minimizes deep cancellations + resonant unevenness.
+
+Two important realities up front:
+
+From a single IR at one mic position you can’t uniquely reconstruct the full 3D pressure field. The IR gives you a “projection” of the room onto that source–receiver configuration.
+
+But if you combine (a) the geometry model (eigenmodes) with (b) modal parameters extracted from the IR, you can produce a physically consistent field and a very useful seat optimizer.
+
+Below is the full math + algorithm (ready to turn into code).
+
+0) Definitions and inputs
+Geometry
+
+Room footprint: 
+𝑥
+∈
+[
+0
+,
+𝐿
+]
+x∈[0,L], 
+𝑦
+∈
+[
+0
+,
+𝑊
+]
+y∈[0,W]
+
+Ceiling shape: 
+𝑧
+∈
+[
+0
+,
+𝐻
+(
+𝑥
+,
+𝑦
+)
+]
+z∈[0,H(x,y)] (flat ceiling is 
+𝐻
+(
+𝑥
+,
+𝑦
+)
+=
+𝐻
+H(x,y)=H)
+
+Acoustic constants
+
+Speed of sound: 
+𝑐
+≈
+343
+ m/s
+c≈343 m/s (or 
+𝑐
+=
+331.3
++
+0.606
+𝑇
+c=331.3+0.606T with 
+𝑇
+T in °C)
+
+Measurement
+
+You have an impulse response 
+ℎ
+(
+𝑡
+)
+h(t) measured with known excitation (sweep/chirp) and deconvolution.
+
+Source position 
+𝑟
+𝑠
+=
+(
+𝑥
+𝑠
+,
+𝑦
+𝑠
+,
+𝑧
+𝑠
+)
+r
+s
+	​
+
+=(x
+s
+	​
+
+,y
+s
+	​
+
+,z
+s
+	​
+
+) (speaker), mic position 
+𝑟
+𝑚
+r
+m
+	​
+
+.
+
+1) What “room modes” are in math terms
+
+Room modes are eigen-solutions of the Helmholtz equation in the room volume 
+Ω
+Ω:
+
+∇
+2
+𝜙
+𝑖
+(
+𝑟
+)
++
+𝑘
+𝑖
+2
+𝜙
+𝑖
+(
+𝑟
+)
+=
+0
+,
+𝑟
+∈
+Ω
+∇
+2
+ϕ
+i
+	​
+
+(r)+k
+i
+2
+	​
+
+ϕ
+i
+	​
+
+(r)=0,r∈Ω
+
+Boundary conditions (simplest practical baseline for rooms at low frequency):
+
+Rigid walls (Neumann):
+
+∂
+𝜙
+𝑖
+∂
+𝑛
+=
+0
+on 
+∂
+Ω
+∂n
+∂ϕ
+i
+	​
+
+	​
+
+=0on ∂Ω
+
+(You can later move to impedance boundaries, but start here.)
+
+Each eigenvalue 
+𝑘
+𝑖
+k
+i
+	​
+
+ maps to frequency:
+
+𝑓
+𝑖
+=
+𝑐
+2
+𝜋
+𝑘
+𝑖
+f
+i
+	​
+
+=
+2π
+c
+	​
+
+k
+i
+	​
+
+
+The associated eigenfunction 
+𝜙
+𝑖
+(
+𝑟
+)
+ϕ
+i
+	​
+
+(r) is the pressure mode shape. Pressure maps are basically 
+∣
+𝜙
+𝑖
+∣
+∣ϕ
+i
+	​
+
+∣ or the driven response 
+∣
+𝑝
+(
+𝑟
+,
+𝑓
+)
+∣
+∣p(r,f)∣.
+
+2) Closed-form modes for a perfect cuboid (flat ceiling)
+
+If 
+𝐻
+(
+𝑥
+,
+𝑦
+)
+=
+𝐻
+H(x,y)=H constant, eigenmodes are separable:
+
+Modal frequencies
+𝑓
+𝑛
+𝑚
+𝑙
+=
+𝑐
+2
+(
+𝑛
+𝐿
+)
+2
++
+(
+𝑚
+𝑊
+)
+2
++
+(
+𝑙
+𝐻
+)
+2
+f
+nml
+	​
+
+=
+2
+c
+	​
+
+(
+L
+n
+	​
+
+)
+2
++(
+W
+m
+	​
+
+)
+2
++(
+H
+l
+	​
+
+)
+2
+	​
+
+
+with 
+𝑛
+,
+𝑚
+,
+𝑙
+∈
+{
+0
+,
+1
+,
+2
+,
+…
+ 
+}
+n,m,l∈{0,1,2,…}, not all zero.
+
+Mode shapes (rigid boundaries)
+𝜙
+𝑛
+𝑚
+𝑙
+(
+𝑥
+,
+𝑦
+,
+𝑧
+)
+=
+cos
+⁡
+(
+𝑛
+𝜋
+𝑥
+𝐿
+)
+cos
+⁡
+(
+𝑚
+𝜋
+𝑦
+𝑊
+)
+cos
+⁡
+(
+𝑙
+𝜋
+𝑧
+𝐻
+)
+ϕ
+nml
+	​
+
+(x,y,z)=cos(
+L
+nπx
+	​
+
+)cos(
+W
+mπy
+	​
+
+)cos(
+H
+lπz
+	​
+
+)
+Pressure map slices
+
+Top view at ear height 
+𝑧
+=
+𝑧
+ear
+z=z
+ear
+	​
+
+:
+
+𝑃
+top
+(
+𝑥
+,
+𝑦
+)
+=
+∣
+𝜙
+𝑛
+𝑚
+𝑙
+(
+𝑥
+,
+𝑦
+,
+𝑧
+ear
+)
+∣
+P
+top
+	​
+
+(x,y)=∣ϕ
+nml
+	​
+
+(x,y,z
+ear
+	​
+
+)∣
+
+Side view (for example midline 
+𝑦
+=
+𝑊
+/
+2
+y=W/2):
+
+𝑃
+side
+(
+𝑥
+,
+𝑧
+)
+=
+∣
+𝜙
+𝑛
+𝑚
+𝑙
+(
+𝑥
+,
+𝑊
+/
+2
+,
+𝑧
+)
+∣
+P
+side
+	​
+
+(x,z)=∣ϕ
+nml
+	​
+
+(x,W/2,z)∣
+
+This is “concrete” and very fast.
+
+3) Shaped ceiling (gable, slope, cathedral): concrete eigenmodes via a numerical solver
+
+When 
+𝐻
+(
+𝑥
+,
+𝑦
+)
+H(x,y) varies, the cuboid closed-form solution breaks. You solve the eigenproblem numerically.
+
+3.1 Discretize the volume on a 3D grid
+
+Choose a grid spacing 
+ℎ
+h (practical: 
+ℎ
+≤
+𝜆
+min
+/
+10
+h≤λ
+min
+	​
+
+/10).
+If you want modes up to 
+𝑓
+max
+f
+max
+	​
+
+:
+
+𝜆
+min
+=
+𝑐
+𝑓
+max
+,
+ℎ
+≲
+𝑐
+10
+𝑓
+max
+λ
+min
+	​
+
+=
+f
+max
+	​
+
+c
+	​
+
+,h≲
+10f
+max
+	​
+
+c
+	​
+
+
+Example: 
+𝑓
+max
+=
+200
+f
+max
+	​
+
+=200 Hz ⇒ 
+ℎ
+≲
+0.17
+h≲0.17 m (use 0.05–0.10 m if feasible).
+
+Define nodes 
+(
+𝑥
+𝑖
+,
+𝑦
+𝑗
+,
+𝑧
+𝑘
+)
+(x
+i
+	​
+
+,y
+j
+	​
+
+,z
+k
+	​
+
+). Build a mask of nodes inside the room:
+
+inside
+(
+𝑖
+,
+𝑗
+,
+𝑘
+)
+  
+⟺
+  
+0
+≤
+𝑧
+𝑘
+≤
+𝐻
+(
+𝑥
+𝑖
+,
+𝑦
+𝑗
+)
+inside(i,j,k)⟺0≤z
+k
+	​
+
+≤H(x
+i
+	​
+
+,y
+j
+	​
+
+)
+3.2 Finite-difference Laplacian
+
+For interior nodes:
+
+(
+∇
+2
+𝜙
+)
+𝑖
+,
+𝑗
+,
+𝑘
+≈
+𝜙
+𝑖
++
+1
+,
+𝑗
+,
+𝑘
+−
+2
+𝜙
+𝑖
+,
+𝑗
+,
+𝑘
++
+𝜙
+𝑖
+−
+1
+,
+𝑗
+,
+𝑘
+ℎ
+2
++
+𝜙
+𝑖
+,
+𝑗
++
+1
+,
+𝑘
+−
+2
+𝜙
+𝑖
+,
+𝑗
+,
+𝑘
++
+𝜙
+𝑖
+,
+𝑗
+−
+1
+,
+𝑘
+ℎ
+2
++
+𝜙
+𝑖
+,
+𝑗
+,
+𝑘
++
+1
+−
+2
+𝜙
+𝑖
+,
+𝑗
+,
+𝑘
++
+𝜙
+𝑖
+,
+𝑗
+,
+𝑘
+−
+1
+ℎ
+2
+(∇
+2
+ϕ)
+i,j,k
+	​
+
+≈
+h
+2
+ϕ
+i+1,j,k
+	​
+
+−2ϕ
+i,j,k
+	​
+
++ϕ
+i−1,j,k
+	​
+
+	​
+
++
+h
+2
+ϕ
+i,j+1,k
+	​
+
+−2ϕ
+i,j,k
+	​
+
++ϕ
+i,j−1,k
+	​
+
+	​
+
++
+h
+2
+ϕ
+i,j,k+1
+	​
+
+−2ϕ
+i,j,k
+	​
+
++ϕ
+i,j,k−1
+	​
+
+	​
+
+
+The eigenproblem can be written:
+
+−
+𝐿
+𝜙
+=
+𝑘
+2
+𝜙
+−Lϕ=k
+2
+ϕ
+
+where 
+𝐿
+L is the sparse Laplacian matrix for inside nodes.
+
+3.3 Neumann (rigid) boundaries in FDM
+
+Rigid boundary: 
+∂
+𝜙
+/
+∂
+𝑛
+=
+0
+∂ϕ/∂n=0. In finite differences, a common “mirror” approach is:
+
+If a neighbor is outside the room, replace it with the current value (zero normal gradient):
+
+𝜙
+outside neighbor
+=
+𝜙
+𝑖
+,
+𝑗
+,
+𝑘
+ϕ
+outside neighbor
+	​
+
+=ϕ
+i,j,k
+	​
+
+
+This effectively enforces 
+𝜙
+inside
+−
+𝜙
+mirror
+ℎ
+=
+0
+h
+ϕ
+inside
+	​
+
+−ϕ
+mirror
+	​
+
+	​
+
+=0.
+
+So for any missing neighbor in a direction, the second-difference term becomes:
+
+𝜙
+𝑛
+𝑏
+𝑟
+−
+2
+𝜙
++
+𝜙
+𝑚
+𝑖
+𝑠
+𝑠
+𝑖
+𝑛
+𝑔
+ℎ
+2
+⇒
+𝜙
+𝑛
+𝑏
+𝑟
+−
+2
+𝜙
++
+𝜙
+ℎ
+2
+=
+𝜙
+𝑛
+𝑏
+𝑟
+−
+𝜙
+ℎ
+2
+h
+2
+ϕ
+nbr
+	​
+
+−2ϕ+ϕ
+missing
+	​
+
+	​
+
+⇒
+h
+2
+ϕ
+nbr
+	​
+
+−2ϕ+ϕ
+	​
+
+=
+h
+2
+ϕ
+nbr
+	​
+
+−ϕ
+	​
+
+3.4 Solve for first N eigenpairs
+
+Use a sparse eigensolver (ARPACK/Lanczos) to compute the smallest eigenvalues 
+𝑘
+𝑖
+2
+k
+i
+2
+	​
+
+ and eigenvectors 
+𝜙
+𝑖
+ϕ
+i
+	​
+
+.
+
+Convert:
+
+𝑓
+𝑖
+=
+𝑐
+2
+𝜋
+𝑘
+𝑖
+2
+f
+i
+	​
+
+=
+2π
+c
+	​
+
+k
+i
+2
+	​
+
+	​
+
+
+Now you have mode frequencies and 3D pressure shapes for your exact ceiling shape.
+
+4) Extract modal frequencies + damping from the measured IR
+
+Your IR captures the room response for a specific source–receiver pair. Below the Schroeder frequency, the room is well-described as a sum of damped modes.
+
+4.1 Frequency response
+
+Window the IR (long enough to include LF decay), then FFT:
+
+𝐻
+(
+𝑓
+)
+=
+𝐹
+{
+ℎ
+(
+𝑡
+)
+𝑤
+(
+𝑡
+)
+}
+H(f)=F{h(t)w(t)}
+
+Magnitude in dB:
+
+𝑀
+(
+𝑓
+)
+=
+20
+log
+⁡
+10
+(
+∣
+𝐻
+(
+𝑓
+)
+∣
++
+𝜖
+)
+M(f)=20log
+10
+	​
+
+(∣H(f)∣+ϵ)
+4.2 Peak picking (LF modes)
+
+Restrict to 
+𝑓
+∈
+[
+𝑓
+min
+,
+𝑓
+max
+]
+f∈[f
+min
+	​
+
+,f
+max
+	​
+
+] (e.g., 20–200 Hz).
+Find local maxima with minimum separation (e.g., > 3–5 Hz).
+
+4.3 Fit each peak to a damped resonator (gives 
+𝑓
+𝑖
+f
+i
+	​
+
+, 
+𝑄
+𝑖
+Q
+i
+	​
+
+)
+
+A useful parametric form for the modal contribution magnitude around each peak is Lorentzian-like:
+
+∣
+𝐻
+𝑖
+(
+𝑓
+)
+∣
+≈
+𝐴
+𝑖
+(
+𝑓
+𝑖
+2
+−
+𝑓
+2
+)
+2
++
+(
+𝑓
+𝑓
+𝑖
+𝑄
+𝑖
+)
+2
+∣H
+i
+	​
+
+(f)∣≈
+(f
+i
+2
+	​
+
+−f
+2
+)
+2
++(
+Q
+i
+	​
+
+ff
+i
+	​
+
+	​
+
+)
+2
+	​
+
+A
+i
+	​
+
+	​
+
+
+Fit 
+(
+𝐴
+𝑖
+,
+𝑓
+𝑖
+,
+𝑄
+𝑖
+)
+(A
+i
+	​
+
+,f
+i
+	​
+
+,Q
+i
+	​
+
+) by non-linear least squares in a small band around each peak (e.g., ±5–10 Hz).
+This yields measured damping (via 
+𝑄
+𝑖
+Q
+i
+	​
+
+).
+
+Relationship to decay time:
+
+𝑄
+𝑖
+≈
+𝜋
+𝑓
+𝑖
+𝜏
+𝑖
+,
+𝜏
+𝑖
+=
+energy decay time constant
+Q
+i
+	​
+
+≈πf
+i
+	​
+
+τ
+i
+	​
+
+,τ
+i
+	​
+
+=energy decay time constant
+
+and
+
+𝑇
+60
+,
+𝑖
+≈
+𝜏
+𝑖
+ln
+⁡
+(
+10
+3
+)
+≈
+6.91
+ 
+𝜏
+𝑖
+T
+60,i
+	​
+
+≈τ
+i
+	​
+
+ln(10
+3
+)≈6.91τ
+i
+	​
+
+
+So:
+
+𝑇
+60
+,
+𝑖
+≈
+6.91
+ 
+𝑄
+𝑖
+𝜋
+𝑓
+𝑖
+T
+60,i
+	​
+
+≈
+πf
+i
+	​
+
+6.91Q
+i
+	​
+
+	​
+
+4.4 Match measured peaks to predicted eigenfrequencies
+
+You now have:
+
+Predicted 
+𝑓
+𝑖
+model
+f
+i
+model
+	​
+
+ from cuboid formula or shaped-ceiling eigen solver
+
+Measured 
+𝑓
+𝑖
+meas
+f
+i
+meas
+	​
+
+ from IR
+
+Match by nearest frequency (Hungarian assignment if crowded).
+Then you can transfer the measured damping 
+𝑄
+𝑖
+Q
+i
+	​
+
+ onto the corresponding modeled mode shape.
+
+This is the key step that makes the pressure maps “concrete” rather than just theoretical.
+
+5) Build a driven room model (predict pressure anywhere)
+
+Once you have mode shapes 
+𝜙
+𝑖
+(
+𝑟
+)
+ϕ
+i
+	​
+
+(r), modal frequencies 
+𝑓
+𝑖
+f
+i
+	​
+
+, and damping 
+𝑄
+𝑖
+Q
+i
+	​
+
+, you can predict the complex pressure response at any point 
+𝑟
+r:
+
+𝑝
+(
+𝑟
+,
+𝑓
+)
+=
+∑
+𝑖
+=
+1
+𝑁
+𝐶
+𝑖
+ 
+𝜙
+𝑖
+(
+𝑟
+)
+(
+𝑓
+𝑖
+2
+−
+𝑓
+2
+)
++
+𝑗
+(
+𝑓
+𝑓
+𝑖
+𝑄
+𝑖
+)
+p(r,f)=
+i=1
+∑
+N
+	​
+
+(f
+i
+2
+	​
+
+−f
+2
+)+j(
+Q
+i
+	​
+
+ff
+i
+	​
+
+	​
+
+)
+C
+i
+	​
+
+ϕ
+i
+	​
+
+(r)
+	​
+
+
+where the source coupling coefficient 
+𝐶
+𝑖
+C
+i
+	​
+
+ depends on source position:
+
+𝐶
+𝑖
+=
+𝑆
+𝑖
+ 
+𝜙
+𝑖
+(
+𝑟
+𝑠
+)
+C
+i
+	​
+
+=S
+i
+	​
+
+ϕ
+i
+	​
+
+(r
+s
+	​
+
+)
+
+(
+𝑆
+𝑖
+S
+i
+	​
+
+ is a scaling that you can set to 1 for normalized maps, or fit globally to match measured magnitude.)
+
+So:
+
+𝑝
+(
+𝑟
+,
+𝑓
+)
+=
+∑
+𝑖
+=
+1
+𝑁
+𝑆
+𝑖
+ 
+𝜙
+𝑖
+(
+𝑟
+𝑠
+)
+ 
+𝜙
+𝑖
+(
+𝑟
+)
+(
+𝑓
+𝑖
+2
+−
+𝑓
+2
+)
++
+𝑗
+(
+𝑓
+𝑓
+𝑖
+𝑄
+𝑖
+)
+p(r,f)=
+i=1
+∑
+N
+	​
+
+(f
+i
+2
+	​
+
+−f
+2
+)+j(
+Q
+i
+	​
+
+ff
+i
+	​
+
+	​
+
+)
+S
+i
+	​
+
+ϕ
+i
+	​
+
+(r
+s
+	​
+
+)ϕ
+i
+	​
+
+(r)
+	​
+
+
+Then SPL-like magnitude:
+
+SPL
+(
+𝑟
+,
+𝑓
+)
+=
+20
+log
+⁡
+10
+(
+∣
+𝑝
+(
+𝑟
+,
+𝑓
+)
+∣
++
+𝜖
+)
+SPL(r,f)=20log
+10
+	​
+
+(∣p(r,f)∣+ϵ)
+Pressure maps
+
+Pick either:
+
+Modal map at a mode frequency 
+𝑓
+=
+𝑓
+𝑖
+f=f
+i
+	​
+
+: show 
+∣
+𝜙
+𝑖
+∣
+∣ϕ
+i
+	​
+
+∣ (cleanest)
+
+Driven map at any 
+𝑓
+f: show 
+∣
+𝑝
+(
+𝑟
+,
+𝑓
+)
+∣
+∣p(r,f)∣ (more realistic)
+
+Top view (ear height):
+
+Map
+top
+(
+𝑥
+,
+𝑦
+)
+=
+∣
+𝑝
+(
+(
+𝑥
+,
+𝑦
+,
+𝑧
+ear
+)
+,
+𝑓
+0
+)
+∣
+Map
+top
+	​
+
+(x,y)=∣p((x,y,z
+ear
+	​
+
+),f
+0
+	​
+
+)∣
+
+Side view:
+
+Map
+side
+(
+𝑥
+,
+𝑧
+)
+=
+∣
+𝑝
+(
+(
+𝑥
+,
+𝑊
+/
+2
+,
+𝑧
+)
+,
+𝑓
+0
+)
+∣
+Map
+side
+	​
+
+(x,z)=∣p((x,W/2,z),f
+0
+	​
+
+)∣
+6) Find the optimal listening position (minimize cancellations + resonances)
+
+You can now compute a predicted LF response at any candidate listening position 
+𝑟
+𝐿
+r
+L
+	​
+
+.
+
+6.1 Candidate set
+
+Common practical constraints:
+
+Listener on centerline: 
+𝑦
+𝐿
+=
+𝑊
+/
+2
+y
+L
+	​
+
+=W/2
+
+Ear height fixed: 
+𝑧
+𝐿
+=
+𝑧
+ear
+z
+L
+	​
+
+=z
+ear
+	​
+
+
+Search 
+𝑥
+𝐿
+∈
+[
+0.2
+𝐿
+,
+0.9
+𝐿
+]
+x
+L
+	​
+
+∈[0.2L,0.9L] (avoid too close to walls)
+
+6.2 Objective functions (what “best” means)
+
+Compute response at 
+𝑟
+𝐿
+r
+L
+	​
+
+:
+
+𝑀
+𝐿
+(
+𝑓
+)
+=
+20
+log
+⁡
+10
+(
+∣
+𝑝
+(
+𝑟
+𝐿
+,
+𝑓
+)
+∣
++
+𝜖
+)
+M
+L
+	​
+
+(f)=20log
+10
+	​
+
+(∣p(r
+L
+	​
+
+,f)∣+ϵ)
+
+Optionally smooth 
+𝑀
+𝐿
+M
+L
+	​
+
+ with 1/12-oct.
+
+Define the band 
+𝐵
+=
+[
+30
+,
+200
+]
+B=[30,200] Hz (or up to your Schroeder estimate).
+
+A) Flatness / variance
+𝐽
+var
+(
+𝑟
+𝐿
+)
+=
+std
+𝑓
+∈
+𝐵
+(
+𝑀
+𝐿
+(
+𝑓
+)
+)
+J
+var
+	​
+
+(r
+L
+	​
+
+)=std
+f∈B
+	​
+
+(M
+L
+	​
+
+(f))
+B) Deep-null penalty (cancellations)
+
+Let 
+𝑚
+med
+=
+median
+𝑓
+∈
+𝐵
+(
+𝑀
+𝐿
+(
+𝑓
+)
+)
+m
+med
+	​
+
+=median
+f∈B
+	​
+
+(M
+L
+	​
+
+(f)).
+Penalty for frequencies below median by >10 dB:
+
+𝐽
+null
+(
+𝑟
+𝐿
+)
+=
+1
+∣
+𝐵
+∣
+∫
+𝑓
+∈
+𝐵
+max
+⁡
+(
+0
+,
+ 
+(
+𝑚
+med
+−
+10
+)
+−
+𝑀
+𝐿
+(
+𝑓
+)
+)
+ 
+𝑑
+𝑓
+J
+null
+	​
+
+(r
+L
+	​
+
+)=
+∣B∣
+1
+	​
+
+∫
+f∈B
+	​
+
+max(0, (m
+med
+	​
+
+−10)−M
+L
+	​
+
+(f))df
+C) Peak penalty (resonances)
+𝐽
+peak
+(
+𝑟
+𝐿
+)
+=
+1
+∣
+𝐵
+∣
+∫
+𝑓
+∈
+𝐵
+max
+⁡
+(
+0
+,
+ 
+𝑀
+𝐿
+(
+𝑓
+)
+−
+(
+𝑚
+med
++
+6
+)
+)
+ 
+𝑑
+𝑓
+J
+peak
+	​
+
+(r
+L
+	​
+
+)=
+∣B∣
+1
+	​
+
+∫
+f∈B
+	​
+
+max(0, M
+L
+	​
+
+(f)−(m
+med
+	​
+
++6))df
+D) Spatial robustness (optional but very powerful)
+
+Define a small neighborhood around the seat (the “listening area”):
+
+𝑟
+𝑘
+=
+𝑟
+𝐿
++
+(
+Δ
+𝑥
+𝑘
+,
+Δ
+𝑦
+𝑘
+,
+Δ
+𝑧
+𝑘
+)
+r
+k
+	​
+
+=r
+L
+	​
+
++(Δx
+k
+	​
+
+,Δy
+k
+	​
+
+,Δz
+k
+	​
+
+)
+
+Compute:
+
+𝑆
+𝐷
+(
+𝑓
+)
+=
+std
+𝑘
+(
+𝑀
+(
+𝑟
+𝑘
+,
+𝑓
+)
+)
+SD(f)=std
+k
+	​
+
+(M(r
+k
+	​
+
+,f))
+
+and
+
+𝐽
+spatial
+(
+𝑟
+𝐿
+)
+=
+mean
+𝑓
+∈
+𝐵
+(
+𝑆
+𝐷
+(
+𝑓
+)
+)
+J
+spatial
+	​
+
+(r
+L
+	​
+
+)=mean
+f∈B
+	​
+
+(SD(f))
+Total objective
+𝐽
+(
+𝑟
+𝐿
+)
+=
+𝑤
+1
+𝐽
+var
++
+𝑤
+2
+𝐽
+null
++
+𝑤
+3
+𝐽
+peak
++
+𝑤
+4
+𝐽
+spatial
+J(r
+L
+	​
+
+)=w
+1
+	​
+
+J
+var
+	​
+
++w
+2
+	​
+
+J
+null
+	​
+
++w
+3
+	​
+
+J
+peak
+	​
+
++w
+4
+	​
+
+J
+spatial
+	​
+
+
+Typical start:
+
+𝑤
+1
+=
+1
+,
+ 
+𝑤
+2
+=
+2
+,
+ 
+𝑤
+3
+=
+1
+,
+ 
+𝑤
+4
+=
+1
+w
+1
+	​
+
+=1, w
+2
+	​
+
+=2, w
+3
+	​
+
+=1, w
+4
+	​
+
+=1
+
+6.3 Search algorithm
+
+Because evaluation is cheap once modes are known:
+
+Coarse scan on 
+𝑥
+𝐿
+x
+L
+	​
+
+ (e.g., step 2–5 cm)
+
+Pick best 3–5 candidates
+
+Local refine around each candidate using 1D golden-section search or Nelder–Mead (on 
+𝑥
+𝐿
+x
+L
+	​
+
+)
+
+Return best 
+𝑥
+𝐿
+x
+L
+	​
+
+ + the response curves + which modes dominate.
+
+7) Full pipeline algorithm (end-to-end)
+Inputs
+
+𝐿
+,
+𝑊
+,
+𝐻
+(
+𝑥
+,
+𝑦
+)
+L,W,H(x,y), temperature 
+𝑇
+T or 
+𝑐
+c
+
+Speaker position(s) 
+𝑟
+𝑠
+r
+s
+	​
+
+
+Measured IR 
+ℎ
+(
+𝑡
+)
+h(t) (one or more mic positions)
+
+𝑧
+ear
+z
+ear
+	​
+
+, search band 
+𝐵
+B
+
+Steps
+
+Extract measured modal peaks from IR: get 
+{
+𝑓
+𝑖
+meas
+,
+𝑄
+𝑖
+meas
+}
+{f
+i
+meas
+	​
+
+,Q
+i
+meas
+	​
+
+}
+
+Compute eigenmodes
+
+Flat ceiling → analytic 
+(
+𝑓
+𝑛
+𝑚
+𝑙
+,
+𝜙
+𝑛
+𝑚
+𝑙
+)
+(f
+nml
+	​
+
+,ϕ
+nml
+	​
+
+)
+
+Shaped ceiling → FDM eigen solver → 
+(
+𝑓
+𝑖
+model
+,
+𝜙
+𝑖
+)
+(f
+i
+model
+	​
+
+,ϕ
+i
+	​
+
+)
+
+Match measured peaks ↔ modeled modes; assign damping 
+𝑄
+𝑖
+Q
+i
+	​
+
+ to mode shapes
+
+Build driven model 
+𝑝
+(
+𝑟
+,
+𝑓
+)
+p(r,f) via modal summation
+
+Generate pressure maps at selected 
+𝑓
+0
+f
+0
+	​
+
+ (peak/null frequencies)
+
+Optimize listening position by minimizing 
+𝐽
+(
+𝑟
+𝐿
+)
+J(r
+L
+	​
+
+)
+
+Output:
+
+best 
+𝑥
+𝐿
+x
+L
+	​
+
+ and confidence (robustness),
+
+plots of predicted 
+𝑀
+𝐿
+(
+𝑓
+)
+M
+L
+	​
+
+(f),
+
+top-view and side-view maps for problematic frequencies,
+
+list of dominant modes at seat.
