@@ -1,0 +1,12 @@
+{
+  "buildCommand": "npm run vercel-build",
+  "outputDirectory": "dist/public",
+  "framework": "vite",
+  "cleanUrls": true,
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
